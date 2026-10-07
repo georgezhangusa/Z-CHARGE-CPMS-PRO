@@ -1,11 +1,4 @@
-<div align="center">
+The EV Charge Point Management System (CPMS or CMS) manages the electric vehicle (EV) charging equipment (EVSE) for large-scale public or enterprise fleets. It manages charging sessions using OCPP versions 1.6j or 2.0.1 and processes credit card transactions through OCPI. It also monitors equipment health. Future features will include Time of Use (ToU) pricing, Plug-n-Charge (PnC), V2G, Smart Charge, and Load Balancing.
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-
-  <h1>Built with AI Studio</h2>
-
-  <p>The fastest path from prompt to production with Gemini.</p>
-
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+This is a conceptual demonstration. If you see potential to develop this into an enterprise-grade CPMS, we can collaborate to make it happen.
+Please get in touch with the author, George Zhang, by email: z_george@yahoo.com or reach me on LinkedIn: georgezhangusa

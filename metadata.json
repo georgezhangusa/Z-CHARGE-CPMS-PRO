@@ -1,0 +1,8 @@
+{
+  "name": "Z-CHARGE CPMS PRO",
+  "description": "Production-ready EV Charging Management System (CPMS) with real-time fleet operations, charger diagnostics, roaming, user admin, and site load management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

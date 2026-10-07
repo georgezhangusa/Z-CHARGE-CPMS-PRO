@@ -1,0 +1,236 @@
+@import "tailwindcss";
+
+/* 3D Tactile Button Utility Classes */
+.btn-3d {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  border-radius: 0.625rem;
+  transition: transform 0.08s ease, border-bottom-width 0.08s ease, box-shadow 0.08s ease, background-color 0.15s ease;
+  user-select: none;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
+}
+
+.btn-3d:active:not(:disabled) {
+  transform: translateY(2px);
+}
+
+.btn-3d:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* Primary / Cyan 3D button */
+.btn-3d-primary,
+.btn-3d-cyan {
+  background-color: #0891b2;
+  color: #ffffff;
+  border: 1px solid #0e7490;
+  border-bottom: 4px solid #164e63;
+  box-shadow: 0 3px 6px rgba(8, 145, 178, 0.25);
+}
+.btn-3d-primary:hover:not(:disabled),
+.btn-3d-cyan:hover:not(:disabled) {
+  background-color: #06b6d4;
+  border-color: #0891b2;
+  border-bottom-color: #0e7490;
+}
+.btn-3d-primary:active:not(:disabled),
+.btn-3d-cyan:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(8, 145, 178, 0.2);
+}
+
+/* Rose / Danger 3D button */
+.btn-3d-danger,
+.btn-3d-rose {
+  background-color: #e11d48;
+  color: #ffffff;
+  border: 1px solid #be123c;
+  border-bottom: 4px solid #881337;
+  box-shadow: 0 3px 6px rgba(225, 29, 72, 0.25);
+}
+.btn-3d-danger:hover:not(:disabled),
+.btn-3d-rose:hover:not(:disabled) {
+  background-color: #f43f5e;
+  border-color: #e11d48;
+  border-bottom-color: #9f1239;
+}
+.btn-3d-danger:active:not(:disabled),
+.btn-3d-rose:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(225, 29, 72, 0.2);
+}
+
+/* Emerald / Success 3D button */
+.btn-3d-emerald,
+.btn-3d-success {
+  background-color: #059669;
+  color: #ffffff;
+  border: 1px solid #047857;
+  border-bottom: 4px solid #064e3b;
+  box-shadow: 0 3px 6px rgba(5, 150, 105, 0.25);
+}
+.btn-3d-emerald:hover:not(:disabled),
+.btn-3d-success:hover:not(:disabled) {
+  background-color: #10b981;
+  border-color: #059669;
+  border-bottom-color: #047857;
+}
+.btn-3d-emerald:active:not(:disabled),
+.btn-3d-success:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(5, 150, 105, 0.2);
+}
+
+/* Amber / Warning 3D button */
+.btn-3d-amber,
+.btn-3d-warning {
+  background-color: #d97706;
+  color: #ffffff;
+  border: 1px solid #b45309;
+  border-bottom: 4px solid #78350f;
+  box-shadow: 0 3px 6px rgba(217, 119, 6, 0.25);
+}
+.btn-3d-amber:hover:not(:disabled),
+.btn-3d-warning:hover:not(:disabled) {
+  background-color: #f59e0b;
+  border-color: #d97706;
+  border-bottom-color: #b45309;
+}
+.btn-3d-amber:active:not(:disabled),
+.btn-3d-warning:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(217, 119, 6, 0.2);
+}
+
+/* White / Slate Neutral 3D button */
+.btn-3d-neutral,
+.btn-3d-white {
+  background-color: #ffffff;
+  color: #1e293b;
+  border: 1px solid #cbd5e1;
+  border-bottom: 4px solid #94a3b8;
+  box-shadow: 0 3px 6px rgba(100, 116, 139, 0.15);
+}
+.btn-3d-neutral:hover:not(:disabled),
+.btn-3d-white:hover:not(:disabled) {
+  background-color: #f8fafc;
+  color: #0f172a;
+  border-color: #94a3b8;
+  border-bottom-color: #64748b;
+}
+.btn-3d-neutral:active:not(:disabled),
+.btn-3d-white:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(100, 116, 139, 0.12);
+}
+
+/* Slate Dark 3D button */
+.btn-3d-dark {
+  background-color: #1e293b;
+  color: #f8fafc;
+  border: 1px solid #0f172a;
+  border-bottom: 4px solid #020617;
+  box-shadow: 0 3px 6px rgba(15, 23, 42, 0.25);
+}
+.btn-3d-dark:hover:not(:disabled) {
+  background-color: #334155;
+  border-color: #1e293b;
+  border-bottom-color: #0f172a;
+}
+.btn-3d-dark:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15);
+}
+
+/* Soft Slate 3D button */
+.btn-3d-soft {
+  background-color: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+  border-bottom: 3px solid #cbd5e1;
+  box-shadow: 0 2px 4px rgba(148, 163, 184, 0.12);
+}
+.btn-3d-soft:hover:not(:disabled) {
+  background-color: #e2e8f0;
+  color: #0f172a;
+  border-bottom-color: #94a3b8;
+}
+.btn-3d-soft:active:not(:disabled) {
+  border-bottom-width: 1px;
+  box-shadow: 0 1px 1px rgba(148, 163, 184, 0.1);
+}
+
+/* Purple / Emulated 3D button */
+.btn-3d-purple {
+  background-color: #9333ea;
+  color: #ffffff;
+  border: 1px solid #7e22ce;
+  border-bottom: 4px solid #581c87;
+  box-shadow: 0 3px 6px rgba(147, 51, 234, 0.25);
+}
+.btn-3d-purple:hover:not(:disabled) {
+  background-color: #a855f7;
+  border-color: #9333ea;
+  border-bottom-color: #6b21a8;
+}
+.btn-3d-purple:active:not(:disabled) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 2px rgba(147, 51, 234, 0.2);
+}
+
+/* Charging Bar Animated Electric Flow & Stripes */
+@keyframes charging-electric-flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes charging-bar-stripes {
+  0% {
+    background-position: 1.25rem 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+.charging-animated-bar {
+  background: linear-gradient(
+    90deg,
+    #06b6d4,
+    #10b981,
+    #0284c7,
+    #10b981,
+    #06b6d4
+  );
+  background-size: 300% 100%;
+  animation: charging-electric-flow 2.5s ease infinite;
+}
+
+.charging-stripe-overlay {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.35) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0.35) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 1rem 1rem;
+  animation: charging-bar-stripes 0.8s linear infinite;
+}

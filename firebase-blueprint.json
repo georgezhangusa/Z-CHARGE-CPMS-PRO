@@ -1,0 +1,142 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with multi-level role-based access control for CPMS operators",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "username": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "site_manager", "technician", "viewer", "superadmin", "operator"]
+        },
+        "assignedSiteIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "mustChangePassword": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Multi-level CPMS user account record with credentials status and role authority",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "site_manager", "technician", "viewer"] },
+        "mustChangePassword": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "invited", "suspended"] },
+        "assignedSiteIds": { "type": "array" },
+        "inviteToken": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "username", "email", "role"]
+    },
+    "InviteEmail": {
+      "title": "InviteEmail",
+      "description": "Dispatched 1st-time login invitation email record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "role": { "type": "string" },
+        "inviteToken": { "type": "string" },
+        "status": { "type": "string", "enum": ["delivered", "opened", "accepted"] },
+        "sentAt": { "type": "string" }
+      },
+      "required": ["id", "recipientEmail", "inviteToken", "sentAt"]
+    },
+    "ChargerRecord": {
+      "title": "ChargerRecord",
+      "description": "EV charging station hardware registered with CPMS and cloud webhook",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "model": { "type": "string" },
+        "vendor": { "type": "string" },
+        "siteId": { "type": "string" },
+        "siteName": { "type": "string" },
+        "type": { "type": "string", "enum": ["DCFC", "AC_L2"] },
+        "totalCapacityKw": { "type": "number" },
+        "currentLoadKw": { "type": "number" },
+        "isSimultaneous": { "type": "boolean" },
+        "isEmulated": { "type": "boolean" },
+        "wsStatus": { "type": "string", "enum": ["connected", "lag", "disconnected"] },
+        "lastHeartbeatSecondsAgo": { "type": "number" },
+        "ocppVersion": { "type": "string", "enum": ["1.6-J", "2.0.1"] },
+        "ipAddress": { "type": "string" },
+        "webhookUrl": { "type": "string" },
+        "webhookSecret": { "type": "string" },
+        "cloudConnectionMode": { "type": "string", "enum": ["direct_ocpp", "webhook_bridge", "mqtt_iot"] },
+        "connectorCount": { "type": "number" },
+        "connectorTypes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evses": { "type": "array" },
+        "health": { "type": "object" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByUserEmail": { "type": "string" }
+      },
+      "required": ["id", "name", "model", "vendor", "siteId", "type", "totalCapacityKw"]
+    },
+    "SiteRecord": {
+      "title": "SiteRecord",
+      "description": "Charging hub or facility with transformer limits and grid capacity",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "address": { "type": "string" },
+        "city": { "type": "string" },
+        "state": { "type": "string" },
+        "transformerLimitKw": { "type": "number" },
+        "currentLoadKw": { "type": "number" },
+        "peakDemandKw24h": { "type": "number" },
+        "totalChargers": { "type": "number" },
+        "activeSessionsCount": { "type": "number" },
+        "offlineCount": { "type": "number" },
+        "todayRevenue": { "type": "number" },
+        "todayEnergyKwh": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "address", "city", "state", "transformerLimitKw"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "entity": "UserProfile",
+      "description": "User profile with role permission"
+    },
+    "/user_accounts/{accountId}": {
+      "entity": "UserAccount",
+      "description": "Multi-level accounts for CPMS"
+    },
+    "/invite_emails/{emailId}": {
+      "entity": "InviteEmail",
+      "description": "Dispatched email invitations"
+    },
+    "/chargers/{chargerId}": {
+      "entity": "ChargerRecord",
+      "description": "EV Charger registered records stored in database"
+    },
+    "/sites/{siteId}": {
+      "entity": "SiteRecord",
+      "description": "Grid sites and charging hub records"
+    }
+  }
+}

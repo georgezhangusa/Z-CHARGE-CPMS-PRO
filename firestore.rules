@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for Multi-Level Access Control (RBAC)
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? getUserData().role
+        : 'viewer';
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        getUserRole() == 'superadmin' ||
+        (request.auth.token.email != null && request.auth.token.email == 'gzhang.v@gmail.com')
+      );
+    }
+
+    function isOperator() {
+      return isSuperAdmin() || getUserRole() == 'operator';
+    }
+
+    function isTechnician() {
+      return isOperator() || getUserRole() == 'technician';
+    }
+
+    // Users Collection (profiles and roles)
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // Allow users to create/update their own basic profile, but role elevation requires superadmin or first-time setup
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (isOwner(userId) && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])))
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // EV Chargers Collection (Hardware records registered via CPMS webhook)
+    match /chargers/{chargerId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
+
+    // Charging Sites Collection (Grid interconnection & facilities)
+    match /sites/{siteId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
+
+    // User Accounts Collection (Multi-level user accounts and credentials)
+    match /user_accounts/{accountId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Dispatched 1st-Time Login Invite Emails Collection
+    match /invite_emails/{emailId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Default catch-all
+    match /{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+  }
+}
