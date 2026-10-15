@@ -75,7 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             </span>
             <span className="px-2 py-0.5 rounded-full bg-cyan-950/80 border border-cyan-600/60 text-cyan-300 font-mono text-[10px] font-bold tracking-tight">
-              v3.0.0
+              v3.0.1
             </span>
           </div>
           <p id="navbar-brand-tagline" className="text-[11px] text-slate-400 font-medium hidden sm:block">
