@@ -473,8 +473,10 @@ export const AllChargersBySiteModal: React.FC<AllChargersBySiteModalProps> = ({
                                   <div className="mt-2.5 space-y-1.5 border-t border-slate-100 pt-2">
                                     {charger.evses.flatMap((evse) =>
                                       evse.connectors.map((conn) => {
-                                        const colorClass = getStatusColor(conn.status);
-                                        const isCharging = conn.status === 'Charging';
+                                        const isOffline = charger.wsStatus === 'disconnected' || !charger.wsStatus;
+                                        const effStatus: PortStatus = isOffline ? 'Offline' : (conn.status || 'Available');
+                                        const colorClass = getStatusColor(effStatus);
+                                        const isCharging = effStatus === 'Charging';
 
                                         return (
                                           <div
@@ -499,7 +501,7 @@ export const AllChargersBySiteModal: React.FC<AllChargersBySiteModalProps> = ({
                                               <span
                                                 className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${colorClass?.bg} ${colorClass?.text} ${colorClass?.border}`}
                                               >
-                                                {formatPortStatus(conn.status)}
+                                                {formatPortStatus(effStatus)}
                                               </span>
                                             </div>
                                           </div>

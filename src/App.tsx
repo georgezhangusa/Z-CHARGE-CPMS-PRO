@@ -47,6 +47,8 @@ import {
   PortStatus,
   StopReason,
 } from './types';
+import { extractOcppPortNumber, isTargetConnector } from './utils';
+import { extract201PortNumber, normalize16Status, normalize201Status } from './lib/ocpp/index';
 
 export default function App() {
   const {
@@ -132,216 +134,269 @@ export default function App() {
       const stationId = msg.stationId;
       const action = String(msg.action || '');
       const payload = (msg.payload || {}) as Record<string, any>;
+      const targetStation = chargers.find((c) => c.id === stationId);
+      const isOcpp201 =
+        targetStation?.ocppVersion === '2.0.1' ||
+        action.includes('TransactionEvent') ||
+        Boolean(payload.chargingStation) ||
+        Boolean(payload.connectorStatus);
 
-      // Directly follow state changes reported in OCPP messages from the charger
-      if (action.includes('StatusNotification')) {
-        const rawConnId =
-          payload.connectorId !== undefined
-            ? Number(payload.connectorId)
-            : payload.evseId !== undefined
-              ? Number(payload.evseId)
-              : 1;
-        const targetPort = isNaN(rawConnId) ? 1 : rawConnId;
-        const rawStatus = String(
-          payload.connectorStatus ||
-          payload.status ||
-          (payload.transactionInfo as any)?.chargingState ||
-          'Available'
-        ).trim().toLowerCase();
+      // --- OCPP 2.0.1 PARSER BRANCH ---
+      if (isOcpp201) {
+        const targetPort = extract201PortNumber(payload);
 
-        let newStatus: PortStatus = 'Available';
-        if (rawStatus.includes('charg')) newStatus = 'Charging';
-        else if (rawStatus.includes('prepar') || rawStatus === 'occupied' || rawStatus.includes('evconnect')) newStatus = 'Occupied';
-        else if (rawStatus.includes('suspendedevse') || rawStatus.includes('suspendedsystem')) newStatus = 'SuspendedSystem';
-        else if (rawStatus.includes('suspendedev') || rawStatus.includes('suspended')) newStatus = 'SuspendedEV';
-        else if (rawStatus.includes('finish')) newStatus = 'Finishing';
-        else if (rawStatus.includes('fault')) newStatus = 'Faulted';
-        else if (rawStatus.includes('unavail') || rawStatus.includes('offlin')) newStatus = 'Offline';
-        else if (rawStatus.includes('reserv')) newStatus = 'Reserved';
-        else if (rawStatus.includes('avail')) newStatus = 'Available';
+        if (action.includes('StatusNotification')) {
+          const rawStatus = String(payload.connectorStatus || payload.status || 'Available');
+          const normStatus = normalize201Status(rawStatus) as PortStatus;
 
-        setChargers((prev) =>
-          prev.map((c) => {
-            if (c.id !== stationId) return c;
-            const updatedEvses = c.evses.map((evse) => ({
-              ...evse,
-              connectors: evse.connectors.map((conn) => {
-                const isTarget =
-                  targetPort === 0
-                    ? newStatus === 'Faulted' || newStatus === 'Offline'
-                    : conn.portNumber === targetPort;
-                if (!isTarget) return conn;
-                const isCharging = newStatus === 'Charging';
-                return {
-                  ...conn,
-                  status: newStatus,
-                  currentPowerKw: isCharging
-                    ? (conn.currentPowerKw > 0 ? conn.currentPowerKw : 0)
-                    : 0,
-                  cableLocked: isCharging || newStatus === 'Occupied' || newStatus === 'Finishing',
-                  activeSessionId:
-                    !isCharging && newStatus !== 'Occupied' && newStatus !== 'SuspendedEV'
-                      ? undefined
-                      : conn.activeSessionId,
-                };
-              }),
-            }));
+          setChargers((prev) =>
+            prev.map((c) => {
+              if (c.id !== stationId) return c;
+              const updatedEvses = c.evses.map((evse, eIdx) => ({
+                ...evse,
+                connectors: evse.connectors.map((conn, cIdx) => {
+                  const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                  if (!isTarget) return conn;
+                  const isCharging = normStatus === 'Charging';
+                  return {
+                    ...conn,
+                    status: normStatus,
+                    currentPowerKw: isCharging ? (conn.currentPowerKw > 0 ? conn.currentPowerKw : 0) : 0,
+                    cableLocked: isCharging || normStatus === 'Occupied' || normStatus === 'Preparing' || normStatus === 'Finishing',
+                    activeSessionId:
+                      !isCharging && normStatus !== 'Occupied' && normStatus !== 'Preparing' && normStatus !== 'SuspendedEV'
+                        ? undefined
+                        : conn.activeSessionId,
+                  };
+                }),
+              }));
 
-            const newTotalLoad = updatedEvses
-              .flatMap((e) => e.connectors)
-              .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0);
-
-            return {
-              ...c,
-              wsStatus: 'connected',
-              lastHeartbeatSecondsAgo: 0,
-              currentLoadKw: newTotalLoad,
-              evses: updatedEvses,
-            };
-          })
-        );
-      } else if (
-        action.includes('TransactionEvent') &&
-        String(payload.eventType || '').toLowerCase() === 'updated'
-      ) {
-        const rawConnId =
-          payload.connectorId !== undefined
-            ? Number(payload.connectorId)
-            : payload.evseId !== undefined
-              ? Number(payload.evseId)
-              : 1;
-        const targetPort = isNaN(rawConnId) || rawConnId <= 0 ? 1 : rawConnId;
-        const chargingState = String(
-          (payload.transactionInfo as any)?.chargingState || ''
-        ).toLowerCase();
-
-        let updatedStatus: PortStatus = 'Charging';
-        if (chargingState.includes('charg')) updatedStatus = 'Charging';
-        else if (chargingState.includes('evconnect') || chargingState.includes('prepar') || chargingState === 'occupied') updatedStatus = 'Occupied';
-        else if (chargingState.includes('finish')) updatedStatus = 'Finishing';
-        else if (chargingState.includes('suspendedevse') || chargingState.includes('suspendedsystem')) updatedStatus = 'SuspendedSystem';
-        else if (chargingState.includes('suspended')) updatedStatus = 'SuspendedEV';
-        else if (chargingState.includes('idle') || chargingState.includes('avail')) updatedStatus = 'Available';
-
-        setChargers((prev) =>
-          prev.map((c) => {
-            if (c.id !== stationId) return c;
-            const updatedEvses = c.evses.map((evse) => ({
-              ...evse,
-              connectors: evse.connectors.map((conn) => {
-                if (conn.portNumber !== targetPort) return conn;
-                const isCharging = updatedStatus === 'Charging';
-                return {
-                  ...conn,
-                  status: updatedStatus,
-                  currentPowerKw: isCharging
-                    ? (conn.currentPowerKw > 0 ? conn.currentPowerKw : 0)
-                    : 0,
-                  cableLocked: isCharging || updatedStatus === 'Occupied' || updatedStatus === 'Finishing',
-                };
-              }),
-            }));
-
-            return {
-              ...c,
-              wsStatus: 'connected',
-              lastHeartbeatSecondsAgo: 0,
-              currentLoadKw: updatedEvses
+              const newTotalLoad = updatedEvses
                 .flatMap((e) => e.connectors)
-                .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
-              evses: updatedEvses,
-            };
-          })
-        );
-      } else if (
-        action.includes('StartTransaction') ||
-        (action.includes('TransactionEvent') && String(payload.eventType || '').toLowerCase() === 'started')
-      ) {
-        const rawConnId =
-          payload.connectorId !== undefined
-            ? Number(payload.connectorId)
-            : payload.evseId !== undefined
-              ? Number(payload.evseId)
-              : 1;
-        const targetPort = isNaN(rawConnId) || rawConnId <= 0 ? 1 : rawConnId;
+                .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0);
 
-        setChargers((prev) =>
-          prev.map((c) => {
-            if (c.id !== stationId) return c;
-            const updatedEvses = c.evses.map((evse) => ({
-              ...evse,
-              connectors: evse.connectors.map((conn) => {
-                if (conn.portNumber !== targetPort) return conn;
-                // Power starts at 0 kW until charger reports real Power.Active.Import via MeterValues
-                const powerKw = conn.currentPowerKw > 0 ? conn.currentPowerKw : 0;
+              return {
+                ...c,
+                wsStatus: 'connected',
+                lastHeartbeatSecondsAgo: 0,
+                currentLoadKw: newTotalLoad,
+                evses: updatedEvses,
+              };
+            })
+          );
+        } else if (action.includes('TransactionEvent')) {
+          const eventType = String(payload.eventType || '').toLowerCase();
+          const chargingState = String((payload.transactionInfo as any)?.chargingState || '').toLowerCase();
+
+          if (eventType === 'started') {
+            setChargers((prev) =>
+              prev.map((c) => {
+                if (c.id !== stationId) return c;
+                const updatedEvses = c.evses.map((evse, eIdx) => ({
+                  ...evse,
+                  connectors: evse.connectors.map((conn, cIdx) => {
+                    const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                    if (!isTarget) return conn;
+                    return {
+                      ...conn,
+                      status: 'Preparing' as PortStatus,
+                      currentPowerKw: 0,
+                      cableLocked: true,
+                    };
+                  }),
+                }));
+
                 return {
-                  ...conn,
-                  status: 'Charging' as PortStatus,
-                  currentPowerKw: powerKw,
-                  cableLocked: true,
+                  ...c,
+                  wsStatus: 'connected',
+                  lastHeartbeatSecondsAgo: 0,
+                  currentLoadKw: updatedEvses
+                    .flatMap((e) => e.connectors)
+                    .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
+                  evses: updatedEvses,
                 };
-              }),
-            }));
+              })
+            );
+          } else if (eventType === 'updated') {
+            let updatedStatus: PortStatus = 'Charging';
+            if (chargingState.includes('charg')) updatedStatus = 'Charging';
+            else if (chargingState.includes('prepar')) updatedStatus = 'Preparing';
+            else if (chargingState.includes('evconnect') || chargingState.includes('occupied')) updatedStatus = 'Occupied';
+            else if (chargingState.includes('finish')) updatedStatus = 'Finishing';
+            else if (chargingState.includes('suspendedevse') || chargingState.includes('suspendedsystem')) updatedStatus = 'SuspendedSystem';
+            else if (chargingState.includes('suspended')) updatedStatus = 'SuspendedEV';
+            else if (chargingState.includes('idle') || chargingState.includes('avail')) updatedStatus = 'Available';
 
-            return {
-              ...c,
-              wsStatus: 'connected',
-              lastHeartbeatSecondsAgo: 0,
-              currentLoadKw: updatedEvses
-                .flatMap((e) => e.connectors)
-                .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
-              evses: updatedEvses,
-            };
-          })
-        );
-      } else if (
-        action.includes('StopTransaction') ||
-        (action.includes('TransactionEvent') && String(payload.eventType || '').toLowerCase() === 'ended')
-      ) {
-        const rawConnId =
-          payload.connectorId !== undefined
-            ? Number(payload.connectorId)
-            : payload.evseId !== undefined
-              ? Number(payload.evseId)
-              : 1;
-        const targetPort = isNaN(rawConnId) || rawConnId <= 0 ? 1 : rawConnId;
+            setChargers((prev) =>
+              prev.map((c) => {
+                if (c.id !== stationId) return c;
+                const updatedEvses = c.evses.map((evse, eIdx) => ({
+                  ...evse,
+                  connectors: evse.connectors.map((conn, cIdx) => {
+                    const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                    if (!isTarget) return conn;
+                    const isCharging = updatedStatus === 'Charging';
+                    return {
+                      ...conn,
+                      status: updatedStatus,
+                      currentPowerKw: isCharging ? (conn.currentPowerKw > 0 ? conn.currentPowerKw : 0) : 0,
+                      cableLocked: isCharging || updatedStatus === 'Occupied' || updatedStatus === 'Preparing' || updatedStatus === 'Finishing',
+                    };
+                  }),
+                }));
 
-        setChargers((prev) =>
-          prev.map((c) => {
-            if (c.id !== stationId) return c;
-            const updatedEvses = c.evses.map((evse) => ({
-              ...evse,
-              connectors: evse.connectors.map((conn) => {
-                if (conn.portNumber !== targetPort) return conn;
                 return {
-                  ...conn,
-                  status: 'Available' as PortStatus,
-                  currentPowerKw: 0,
-                  cableLocked: false,
-                  activeSessionId: undefined,
+                  ...c,
+                  wsStatus: 'connected',
+                  lastHeartbeatSecondsAgo: 0,
+                  currentLoadKw: updatedEvses
+                    .flatMap((e) => e.connectors)
+                    .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
+                  evses: updatedEvses,
                 };
-              }),
-            }));
+              })
+            );
+          } else if (eventType === 'ended') {
+            setChargers((prev) =>
+              prev.map((c) => {
+                if (c.id !== stationId) return c;
+                const updatedEvses = c.evses.map((evse, eIdx) => ({
+                  ...evse,
+                  connectors: evse.connectors.map((conn, cIdx) => {
+                    const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                    if (!isTarget) return conn;
+                    return {
+                      ...conn,
+                      status: 'Available' as PortStatus,
+                      currentPowerKw: 0,
+                      cableLocked: false,
+                      activeSessionId: undefined,
+                    };
+                  }),
+                }));
 
-            return {
-              ...c,
-              wsStatus: 'connected',
-              lastHeartbeatSecondsAgo: 0,
-              currentLoadKw: updatedEvses
-                .flatMap((e) => e.connectors)
-                .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
-              evses: updatedEvses,
-            };
-          })
-        );
+                return {
+                  ...c,
+                  wsStatus: 'connected',
+                  lastHeartbeatSecondsAgo: 0,
+                  currentLoadKw: updatedEvses
+                    .flatMap((e) => e.connectors)
+                    .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
+                  evses: updatedEvses,
+                };
+              })
+            );
+          }
+        }
       } else {
-        setChargers((prev) =>
-          prev.map((c) =>
-            c.id === stationId
-              ? { ...c, wsStatus: 'connected', lastHeartbeatSecondsAgo: 0 }
-              : c
-          )
-        );
+        // --- OCPP 1.6-J PARSER BRANCH ---
+        const targetPort = extractOcppPortNumber(payload);
+
+        if (action.includes('StatusNotification')) {
+          const rawStatus = String(payload.status || 'Available');
+          const normStatus = normalize16Status(rawStatus) as PortStatus;
+
+          setChargers((prev) =>
+            prev.map((c) => {
+              if (c.id !== stationId) return c;
+              const updatedEvses = c.evses.map((evse, eIdx) => ({
+                ...evse,
+                connectors: evse.connectors.map((conn, cIdx) => {
+                  const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                  if (!isTarget) return conn;
+                  const isCharging = normStatus === 'Charging';
+                  return {
+                    ...conn,
+                    status: normStatus,
+                    currentPowerKw: isCharging ? (conn.currentPowerKw > 0 ? conn.currentPowerKw : 0) : 0,
+                    cableLocked: isCharging || normStatus === 'Occupied' || normStatus === 'Preparing' || normStatus === 'Finishing',
+                    activeSessionId:
+                      !isCharging && normStatus !== 'Occupied' && normStatus !== 'Preparing' && normStatus !== 'SuspendedEV'
+                        ? undefined
+                        : conn.activeSessionId,
+                  };
+                }),
+              }));
+
+              const newTotalLoad = updatedEvses
+                .flatMap((e) => e.connectors)
+                .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0);
+
+              return {
+                ...c,
+                wsStatus: 'connected',
+                lastHeartbeatSecondsAgo: 0,
+                currentLoadKw: newTotalLoad,
+                evses: updatedEvses,
+              };
+            })
+          );
+        } else if (action.includes('StartTransaction')) {
+          setChargers((prev) =>
+            prev.map((c) => {
+              if (c.id !== stationId) return c;
+              const updatedEvses = c.evses.map((evse, eIdx) => ({
+                ...evse,
+                connectors: evse.connectors.map((conn, cIdx) => {
+                  const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                  if (!isTarget) return conn;
+                  return {
+                    ...conn,
+                    status: 'Preparing' as PortStatus,
+                    currentPowerKw: 0,
+                    cableLocked: true,
+                  };
+                }),
+              }));
+
+              return {
+                ...c,
+                wsStatus: 'connected',
+                lastHeartbeatSecondsAgo: 0,
+                currentLoadKw: updatedEvses
+                  .flatMap((e) => e.connectors)
+                  .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
+                evses: updatedEvses,
+              };
+            })
+          );
+        } else if (action.includes('StopTransaction')) {
+          setChargers((prev) =>
+            prev.map((c) => {
+              if (c.id !== stationId) return c;
+              const updatedEvses = c.evses.map((evse, eIdx) => ({
+                ...evse,
+                connectors: evse.connectors.map((conn, cIdx) => {
+                  const isTarget = isTargetConnector(targetPort, c, eIdx, cIdx, conn);
+                  if (!isTarget) return conn;
+                  return {
+                    ...conn,
+                    status: 'Available' as PortStatus,
+                    currentPowerKw: 0,
+                    cableLocked: false,
+                    activeSessionId: undefined,
+                  };
+                }),
+              }));
+
+              return {
+                ...c,
+                wsStatus: 'connected',
+                lastHeartbeatSecondsAgo: 0,
+                currentLoadKw: updatedEvses
+                  .flatMap((e) => e.connectors)
+                  .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0),
+                evses: updatedEvses,
+              };
+            })
+          );
+        } else {
+          setChargers((prev) =>
+            prev.map((c) =>
+              c.id === stationId ? { ...c, wsStatus: 'connected', lastHeartbeatSecondsAgo: 0 } : c
+            )
+          );
+        }
       }
     },
     onChargerConnected: ({ stationId, ip, ocppVersion }) => {
@@ -356,11 +411,31 @@ export default function App() {
                   ipAddress: ip,
                   ocppVersion: (ocppVersion as any) || c.ocppVersion,
                   lastHeartbeatSecondsAgo: 0,
+                  evses: c.evses.map((evse) => ({
+                    ...evse,
+                    connectors: evse.connectors.map((conn) => {
+                      const isBusy =
+                        conn.status === 'Charging' ||
+                        conn.status === 'Preparing' ||
+                        conn.status === 'Occupied' ||
+                        conn.status === 'SuspendedEV' ||
+                        conn.status === 'SuspendedSystem' ||
+                        conn.status === 'Finishing' ||
+                        conn.status === 'Faulted' ||
+                        conn.status === 'Maintenance' ||
+                        Boolean(conn.activeSessionId) ||
+                        conn.currentPowerKw > 0;
+                      return {
+                        ...conn,
+                        status: isBusy ? conn.status : ('Available' as PortStatus),
+                      };
+                    }),
+                  })),
                 }
               : c
           );
         }
-        // Auto-register external physical charger into CPMS fleet
+        // Auto-register external physical charger into CPMS fleet with dual ports (Port 1 & Port 2)
         const newDynamicCharger: ChargingStation = {
           id: stationId,
           name: `Internet Charger (${stationId})`,
@@ -390,7 +465,19 @@ export default function App() {
                   evseId: `EVSE-${stationId}-1`,
                   portNumber: 1,
                   type: 'CCS1',
-                  maxPowerKw: 180,
+                  maxPowerKw: 90,
+                  status: 'Available',
+                  currentPowerKw: 0,
+                  voltageV: 400,
+                  currentA: 0,
+                  cableLocked: false,
+                },
+                {
+                  id: `CONN-${stationId}-2`,
+                  evseId: `EVSE-${stationId}-1`,
+                  portNumber: 2,
+                  type: 'CCS1',
+                  maxPowerKw: 90,
                   status: 'Available',
                   currentPowerKw: 0,
                   voltageV: 400,
@@ -430,7 +517,23 @@ export default function App() {
     onChargerDisconnected: (stationId) => {
       setChargers((prev) =>
         prev.map((c) =>
-          c.id === stationId ? { ...c, wsStatus: 'disconnected', lastHeartbeatSecondsAgo: 999 } : c
+          c.id === stationId
+            ? {
+                ...c,
+                wsStatus: 'disconnected',
+                lastHeartbeatSecondsAgo: 999,
+                currentLoadKw: 0,
+                evses: c.evses.map((evse) => ({
+                  ...evse,
+                  currentLoadKw: 0,
+                  connectors: evse.connectors.map((conn) => ({
+                    ...conn,
+                    status: 'Offline',
+                    currentPowerKw: 0,
+                  })),
+                })),
+              }
+            : c
         )
       );
     },
@@ -439,7 +542,7 @@ export default function App() {
       const statusMap: Record<string, PortStatus> = {
         available: 'Available',
         charging: 'Charging',
-        preparing: 'Occupied',
+        preparing: 'Preparing',
         occupied: 'Occupied',
         suspendedev: 'SuspendedEV',
         suspendedevse: 'SuspendedSystem',
@@ -456,13 +559,10 @@ export default function App() {
       setChargers((prev) =>
         prev.map((c) => {
           if (c.id !== stationId) return c;
-          const updatedEvses = c.evses.map((evse) => ({
+          const updatedEvses = c.evses.map((evse, eIdx) => ({
             ...evse,
-            connectors: evse.connectors.map((conn) => {
-              const isTarget =
-                connectorId === 0
-                  ? normStatus === 'Faulted' || normStatus === 'Offline'
-                  : conn.portNumber === connectorId;
+            connectors: evse.connectors.map((conn, cIdx) => {
+              const isTarget = isTargetConnector(connectorId, c, eIdx, cIdx, conn);
               if (!isTarget) return conn;
 
               const isCharging = normStatus === 'Charging';
@@ -583,20 +683,19 @@ export default function App() {
             wsStatus: 'connected',
             lastHeartbeatSecondsAgo: 0,
             currentLoadKw: kw !== undefined ? kw : c.currentLoadKw,
-            evses: c.evses.map((evse) => ({
+            evses: c.evses.map((evse, eIdx) => ({
               ...evse,
-              connectors: evse.connectors.map((conn) => {
-                const isTarget = connectorId ? conn.portNumber === connectorId : conn.portNumber === 1;
+              connectors: evse.connectors.map((conn, cIdx) => {
+                const isTarget = isTargetConnector(connectorId, c, eIdx, cIdx, conn);
                 if (!isTarget) return conn;
                 const newStatus: PortStatus =
                   conn.status === 'Faulted'
                     ? 'Faulted'
-                    : kw !== undefined && kw > 0.1
-                      ? 'Charging'
-                      : conn.status;
+                    : 'Charging';
                 return {
                   ...conn,
                   status: newStatus,
+                  cableLocked: true,
                   currentPowerKw: kw !== undefined ? kw : conn.currentPowerKw,
                   currentSoc: soc !== undefined ? soc : conn.currentSoc,
                   voltageV: v !== undefined ? v : conn.voltageV,
@@ -712,24 +811,24 @@ export default function App() {
             wsStatus: 'connected',
             lastHeartbeatSecondsAgo: 0,
             currentLoadKw: newLiveSession.currentKw,
-            evses: c.evses.map((evse) => ({
+            evses: c.evses.map((evse, eIdx) => ({
               ...evse,
-              connectors: evse.connectors.map((conn) =>
-                conn.portNumber === portNumber
-                  ? {
-                      ...conn,
-                      status: 'Charging' as PortStatus,
-                      currentPowerKw: newLiveSession.currentKw,
-                      activeSessionId: newLiveSession.id,
-                    }
-                  : conn
-              ),
+              connectors: evse.connectors.map((conn, cIdx) => {
+                const isTarget = isTargetConnector(portNumber, c, eIdx, cIdx, conn);
+                if (!isTarget) return conn;
+                return {
+                  ...conn,
+                  status: 'Preparing' as PortStatus,
+                  currentPowerKw: newLiveSession.currentKw,
+                  activeSessionId: newLiveSession.id,
+                };
+              }),
             })),
           };
         })
       );
     },
-    onSessionStopped: ({ stationId, transactionId, meterStop, reason }) => {
+    onSessionStopped: ({ stationId, connectorId, transactionId, meterStop, reason }) => {
       setSessions((prev) =>
         prev.map((s) => {
           const matchTx = transactionId ? s.id.includes(String(transactionId)) : s.stationId === stationId && s.status === 'active';
@@ -775,19 +874,37 @@ export default function App() {
       setChargers((prev) =>
         prev.map((c) => {
           if (c.id !== stationId) return c;
+          const updatedEvses = c.evses.map((evse, eIdx) => ({
+            ...evse,
+            connectors: evse.connectors.map((conn, cIdx) => {
+              const isMatchingTx =
+                transactionId && conn.activeSessionId
+                  ? conn.activeSessionId.includes(String(transactionId))
+                  : false;
+              const isMatchingPort = connectorId !== undefined ? isTargetConnector(connectorId, c, eIdx, cIdx, conn) : false;
+              if (isMatchingTx || isMatchingPort) {
+                return {
+                  ...conn,
+                  status: 'Available' as PortStatus,
+                  currentPowerKw: 0,
+                  cableLocked: false,
+                  activeSessionId: undefined,
+                };
+              }
+              return conn;
+            }),
+          }));
+
+          const newTotalLoad = updatedEvses
+            .flatMap((e) => e.connectors)
+            .reduce((sum, conn) => sum + (conn.status === 'Charging' ? conn.currentPowerKw : 0), 0);
+
           return {
             ...c,
             wsStatus: 'connected',
             lastHeartbeatSecondsAgo: 0,
-            currentLoadKw: 0,
-            evses: c.evses.map((evse) => ({
-              ...evse,
-              connectors: evse.connectors.map((conn) =>
-                conn.status === 'Charging'
-                  ? { ...conn, status: 'Available' as PortStatus, currentPowerKw: 0, activeSessionId: undefined }
-                  : conn
-              ),
-            })),
+            currentLoadKw: newTotalLoad,
+            evses: updatedEvses,
           };
         })
       );
@@ -820,17 +937,21 @@ export default function App() {
                   const existingConn =
                     existingEvse?.connectors[cIdx] ||
                     existing?.evses.flatMap((e) => e.connectors).find((cn) => cn.portNumber === conn.portNumber);
+                  const isStationOnline = isLiveSocket;
                   const baseStatus = existingConn?.status || conn.status;
-                  const normalizedStatus: PortStatus =
-                    baseStatus === 'Preparing' ? 'Occupied' : (baseStatus as PortStatus);
+                  const normalizedStatus: PortStatus = !isStationOnline
+                    ? 'Offline'
+                    : baseStatus === 'Preparing'
+                      ? 'Occupied'
+                      : (baseStatus as PortStatus) || 'Available';
                   if (existingConn) {
                     return {
                       ...conn,
                       status: normalizedStatus,
-                      currentPowerKw: existingConn.currentPowerKw,
+                      currentPowerKw: isStationOnline ? existingConn.currentPowerKw : 0,
                       currentSoc: existingConn.currentSoc ?? conn.currentSoc,
                       activeSessionId: existingConn.activeSessionId ?? conn.activeSessionId,
-                      cableLocked: existingConn.cableLocked ?? conn.cableLocked,
+                      cableLocked: isStationOnline ? (existingConn.cableLocked ?? conn.cableLocked) : false,
                     };
                   }
                   return {
@@ -867,10 +988,23 @@ export default function App() {
             const elapsed = Math.max(0, Math.floor((now - lastPingTime) / 1000));
             const realWsStatus = elapsed > 35 ? ('lag' as const) : ('connected' as const);
 
+            // If reconnecting from an offline state, restore 'Offline' connectors to 'Available'
+            const wasDisconnected = charger.wsStatus === 'disconnected';
+            const updatedEvses = wasDisconnected
+              ? charger.evses.map((evse) => ({
+                  ...evse,
+                  connectors: evse.connectors.map((conn) => ({
+                    ...conn,
+                    status: conn.status === 'Offline' ? ('Available' as PortStatus) : conn.status,
+                  })),
+                }))
+              : charger.evses;
+
             if (
               charger.wsStatus !== realWsStatus ||
               charger.lastHeartbeatSecondsAgo !== elapsed ||
-              charger.ipAddress !== (socketInfo.ip || charger.ipAddress)
+              charger.ipAddress !== (socketInfo.ip || charger.ipAddress) ||
+              wasDisconnected
             ) {
               changed = true;
               return {
@@ -878,6 +1012,7 @@ export default function App() {
                 wsStatus: realWsStatus,
                 lastHeartbeatSecondsAgo: elapsed,
                 ipAddress: socketInfo.ip || charger.ipAddress,
+                evses: updatedEvses,
               };
             }
           } else if (charger.wsStatus === 'connected' || charger.wsStatus === 'lag') {
@@ -889,6 +1024,16 @@ export default function App() {
                 charger.lastHeartbeatSecondsAgo < 999
                   ? charger.lastHeartbeatSecondsAgo + 1
                   : 999,
+              currentLoadKw: 0,
+              evses: charger.evses.map((evse) => ({
+                ...evse,
+                currentLoadKw: 0,
+                connectors: evse.connectors.map((conn) => ({
+                  ...conn,
+                  status: 'Offline',
+                  currentPowerKw: 0,
+                })),
+              })),
             };
           }
           return charger;
@@ -934,12 +1079,10 @@ export default function App() {
     );
   }, [chargers]);
 
-  // Real-time live session timeout monitor: 1 min timeout without MeterValues
+  // Active charging session duration ticker: real-time duration display (no inactive timer for state updates)
   useEffect(() => {
     const sessionTicker = setInterval(() => {
       const now = Date.now();
-      const timedOutSessions: { stationId: string; portNumber: number; sessionId: string }[] = [];
-
       setSessions((prev) => {
         const hasActive = prev.some((s) => s.status === 'active');
         if (!hasActive) return prev;
@@ -950,68 +1093,12 @@ export default function App() {
           const elapsedSec = Math.max(1, Math.floor((now - startMs) / 1000));
           const elapsedMin = Math.floor(elapsedSec / 60);
 
-          // Check time since last MeterValue (or session start if no MeterValue received yet)
-          const lastMvTime = s.lastMeterValueTimestamp || startMs;
-          const msSinceLastMeterValue = now - lastMvTime;
-
-          // 1 minute timeout (60,000 ms) without any MeterValue message from the charger
-          if (msSinceLastMeterValue >= 60000) {
-            timedOutSessions.push({
-              stationId: s.stationId,
-              portNumber: s.portNumber,
-              sessionId: s.id,
-            });
-
-            return {
-              ...s,
-              status: 'completed' as const,
-              stopReason: 'Timeout' as const,
-              endTime: new Date().toISOString(),
-              durationMinutes: Math.max(1, elapsedMin),
-              currentKw: 0,
-              // Note: Energy and cost remain strictly as calculated from the last MeterValue from the charger
-            };
-          }
-
-          // Within 1 min: keep the charging state!
-          // Real-time duration ticks, but energy delivered and cost are strictly calculated from MeterValues
           return {
             ...s,
             durationMinutes: elapsedMin,
           };
         });
       });
-
-      // Free up charger ports when sessions time out after 1 min with no MeterValues
-      if (timedOutSessions.length > 0) {
-        setChargers((prev) =>
-          prev.map((charger) => {
-            const matches = timedOutSessions.filter((t) => t.stationId === charger.id);
-            if (matches.length === 0) return charger;
-            const timedOutPorts = new Set(matches.map((m) => m.portNumber));
-
-            return {
-              ...charger,
-              currentLoadKw: 0,
-              evses: charger.evses.map((evse) => ({
-                ...evse,
-                connectors: evse.connectors.map((conn) => {
-                  if (timedOutPorts.has(conn.portNumber)) {
-                    return {
-                      ...conn,
-                      status: 'Available' as PortStatus,
-                      currentPowerKw: 0,
-                      activeSessionId: undefined,
-                      cableLocked: false,
-                    };
-                  }
-                  return conn;
-                }),
-              })),
-            };
-          })
-        );
-      }
     }, 1000);
 
     return () => clearInterval(sessionTicker);

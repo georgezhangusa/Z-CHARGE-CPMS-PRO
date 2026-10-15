@@ -29,7 +29,7 @@ import {
   Lock,
   Sliders,
 } from 'lucide-react';
-import { ChargingStation, OcppMessage, Session } from '../types';
+import { ChargingStation, OcppMessage, Session, PortStatus } from '../types';
 import { getStatusColor, formatKw, formatOcppWsUrl, formatPortStatus } from '../utils';
 import { ChargingTimeline } from './ChargingTimeline';
 import { useAuth } from '../lib/AuthContext';
@@ -513,7 +513,9 @@ export const ChargerDetailDrawer: React.FC<ChargerDetailDrawerProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {station.evses.map((evse) =>
                     evse.connectors.map((conn) => {
-                      const statusStyle = getStatusColor(conn.status);
+                      const isOffline = station.wsStatus === 'disconnected' || !station.wsStatus;
+                      const effectiveStatus: PortStatus = isOffline ? 'Offline' : (conn.status || 'Available');
+                      const statusStyle = getStatusColor(effectiveStatus);
                       return (
                         <div
                           key={conn.id}
@@ -536,7 +538,7 @@ export const ChargerDetailDrawer: React.FC<ChargerDetailDrawerProps> = ({
                               className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold border ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}
                             >
                               <span className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`} />
-                              <span>{formatPortStatus(conn.status)}</span>
+                              <span>{isOffline ? 'Offline' : formatPortStatus(effectiveStatus)}</span>
                             </div>
                           </div>
 
@@ -876,7 +878,7 @@ export const ChargerDetailDrawer: React.FC<ChargerDetailDrawerProps> = ({
                   <div>
                     <span className="text-slate-400 text-[11px] block">Webhook Target Endpoint:</span>
                     <div className="p-2 rounded bg-slate-950 border border-slate-800 text-cyan-300 text-[11px] break-all select-all">
-                      {formatOcppWsUrl(station.id, station.webhookUrl)}
+                      {formatOcppWsUrl(station.id, station.webhookUrl, station.ocppVersion)}
                     </div>
                   </div>
 

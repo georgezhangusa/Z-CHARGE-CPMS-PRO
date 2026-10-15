@@ -280,7 +280,7 @@ export interface Session {
   lastMeterValueTimestamp?: number; // ms timestamp of last received MeterValue
   meterStart?: number; // Starting meter value in Wh or kWh
   lastMeterRegister?: number; // Most recent raw meter register
-  meterValuesCount?: number; // Number of MeterValues frames received (OCPP 1.6-J changes state to Charging on 2nd MeterValues)
+  meterValuesCount?: number; // Number of MeterValues frames received (OCPP 1.6-J changes state to Charging on 1st MeterValues)
 }
 
 export interface Site {

@@ -21,7 +21,7 @@ interface UseCpmsWebSocketProps {
   onConnectorStatusChanged?: (info: { stationId: string; connectorId: number; status: PortStatus; errorCode: string; info?: string }) => void;
   onTelemetryReceived?: (info: { stationId: string; connectorId: number; transactionId?: number; meterValues: any; meterValuesCount?: number; ocppVersion?: string }) => void;
   onSessionStarted?: (info: { stationId: string; connectorId: number; transactionId: number; idTag: string; meterStart?: number; meterValuesCount?: number; ocppVersion?: string }) => void;
-  onSessionStopped?: (info: { stationId: string; transactionId: number; meterStop?: number; reason: string }) => void;
+  onSessionStopped?: (info: { stationId: string; connectorId?: number; transactionId: number; meterStop?: number; reason: string }) => void;
   onHeartbeatReceived?: (info: { stationId: string; timestamp: string }) => void;
 }
 

@@ -3,6 +3,12 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  parseOcpp16Message,
+  parseOcpp201Message,
+  resolveOcppProfile,
+  type OcppTransactionState,
+} from './src/lib/ocpp/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,20 +28,11 @@ interface ConnectedCharger {
   connectedAt: string;
   lastPing: string;
   ocppVersion: string;
+  subprotocol?: string;
   model?: string;
   vendor?: string;
   firmwareVersion?: string;
-  activeTransactions: Map<
-    number,
-    {
-      connectorId: number;
-      idTag: string;
-      startTime: string;
-      lastMeterValueTime: number;
-      meterStart?: number;
-      meterValuesCount?: number;
-    }
-  >;
+  activeTransactions: Map<number | string, OcppTransactionState>;
 }
 
 export interface StoredOcppMessage {
@@ -105,13 +102,22 @@ function recordAndBroadcastMessage(msg: StoredOcppMessage) {
 // --------------------------------------------------------------------------
 const ocppWss = new WebSocketServer({
   noServer: true,
-  handleProtocols: (protocols) => {
+  handleProtocols: (protocols, request) => {
     const list = Array.isArray(protocols) ? protocols : Array.from(protocols);
     if (!list || list.length === 0) return false;
+    const url = request?.url || '';
+    // If URL path explicitly specifies 2.0.1 or 2.0, prioritize 2.0.1
+    if (url.includes('/2.0.1') || url.includes('/2.0')) {
+      for (const p of list) {
+        const lower = p.toLowerCase();
+        if (lower === 'ocpp2.0.1' || lower === 'ocpp2.0') return p;
+      }
+    }
+    // Otherwise match in the client's offered priority order
     for (const p of list) {
       const lower = p.toLowerCase();
-      if (lower === 'ocpp1.6' || lower === 'ocpp1.6j') return p;
       if (lower === 'ocpp2.0.1' || lower === 'ocpp2.0') return p;
+      if (lower === 'ocpp1.6' || lower === 'ocpp1.6j') return p;
     }
     return list[0] || false;
   },
@@ -123,10 +129,16 @@ ocppWss.on('connection', (ws: WebSocket, req: http.IncomingMessage, stationId: s
     req.socket.remoteAddress ||
     '127.0.0.1';
 
-  const subprotocol = ws.protocol || 'ocpp1.6';
+  // Determine negotiated WebSocket profile from subprotocol or URL
+  const rawSubprotocol =
+    ws.protocol ||
+    (req.url && (req.url.includes('/ocpp/2.0.1/') || req.url.includes('/ocpp/2.0/')) ? 'ocpp2.0.1' : 'ocpp1.6');
+  const profileInfo = resolveOcppProfile(rawSubprotocol);
   const now = new Date().toISOString();
 
-  console.log(`[OCPP WS] Charger connected from internet: ${stationId} (IP: ${ip}, Protocol: ${subprotocol})`);
+  console.log(
+    `[OCPP WS] Charger connected: ${stationId} (IP: ${ip}, Negotiated Profile: ${profileInfo.profile}, Version: ${profileInfo.version})`
+  );
 
   const chargerRecord: ConnectedCharger = {
     stationId,
@@ -135,7 +147,8 @@ ocppWss.on('connection', (ws: WebSocket, req: http.IncomingMessage, stationId: s
     remoteAddress: ip,
     connectedAt: now,
     lastPing: now,
-    ocppVersion: subprotocol.includes('2.0') ? '2.0.1' : '1.6-J',
+    ocppVersion: profileInfo.version,
+    subprotocol: profileInfo.profile,
     activeTransactions: new Map(),
   };
 
@@ -278,7 +291,54 @@ ocppWss.on('connection', (ws: WebSocket, req: http.IncomingMessage, stationId: s
   });
 });
 
-// Process OCPP 1.6 / 2.0.1 CALL actions received from physical/internet EV charger
+// Helper to resolve port number (1 or 2) across OCPP 1.6 and 2.0.1 schemas
+function resolveOcppPort(payload: Record<string, any>): number {
+  if (!payload || typeof payload !== 'object') return 1;
+  const evseObj = (payload.evse as any) || {};
+
+  const rawConnId = payload.connectorId !== undefined && !isNaN(Number(payload.connectorId)) ? Number(payload.connectorId) : undefined;
+  const rawEvseConnId = typeof evseObj.connectorId === 'number' && !isNaN(evseObj.connectorId) ? Number(evseObj.connectorId) : undefined;
+  const rawEvseId = payload.evseId !== undefined && !isNaN(Number(payload.evseId)) ? Number(payload.evseId) : undefined;
+  const rawEvseObjId = typeof evseObj.id === 'number' && !isNaN(evseObj.id) ? Number(evseObj.id) : undefined;
+  const rawPort = payload.port !== undefined && !isNaN(Number(payload.port)) ? Number(payload.port) : undefined;
+  const rawPortNumber = payload.portNumber !== undefined && !isNaN(Number(payload.portNumber)) ? Number(payload.portNumber) : undefined;
+
+  // Explicit check for Port 2
+  if (
+    rawPort === 2 ||
+    rawPortNumber === 2 ||
+    rawConnId === 2 ||
+    rawEvseConnId === 2 ||
+    rawEvseId === 2 ||
+    rawEvseObjId === 2
+  ) {
+    return 2;
+  }
+
+  // Explicit check for Port 1
+  if (
+    rawPort === 1 ||
+    rawPortNumber === 1 ||
+    rawConnId === 1 ||
+    rawEvseConnId === 1 ||
+    rawEvseId === 1 ||
+    rawEvseObjId === 1
+  ) {
+    return 1;
+  }
+
+  // Check for 0 (ChargePoint main controller)
+  if (rawConnId === 0 || rawEvseId === 0) {
+    return 0;
+  }
+
+  return 1;
+}
+
+/**
+ * Dispatches incoming OCPP CALL actions to the dedicated OCPP 1.6-J or OCPP 2.0.1 parser
+ * strictly based on the active WebSocket profile (subprotocol).
+ */
 function handleChargerCall(
   ws: WebSocket,
   stationId: string,
@@ -288,474 +348,100 @@ function handleChargerCall(
   charger: ConnectedCharger
 ) {
   const timeStr = new Date().toTimeString().split(' ')[0];
-  let responsePayload: Record<string, unknown> = {};
+  const subprotocol = ws.protocol || charger.subprotocol || (charger.ocppVersion === '2.0.1' ? 'ocpp2.0.1' : 'ocpp1.6');
+  const profileInfo = resolveOcppProfile(subprotocol);
 
-  switch (action) {
-    case 'BootNotification': {
-      charger.vendor = String(
-        payload.chargePointVendor ||
-        (payload.chargingStation as any)?.vendorName ||
-        payload.vendor ||
-        'Unknown Vendor'
-      );
-      charger.model = String(
-        payload.chargePointModel ||
-        (payload.chargingStation as any)?.model ||
-        payload.model ||
-        'Unknown Model'
-      );
-      charger.firmwareVersion = String(
-        payload.firmwareVersion ||
-        (payload.chargingStation as any)?.firmwareVersion ||
-        'v1.0.0'
-      );
+  console.log(
+    `[OCPP WS] Dispatching '${action}' from ${stationId} via ${profileInfo.version} parser (profile: ${profileInfo.profile})`
+  );
 
-      responsePayload = {
-        status: 'Accepted',
-        currentTime: new Date().toISOString(),
-        interval: 30, // 30s heartbeat interval
-      };
-
-      // Broadcast charger metadata update
-      broadcastToUI({
-        type: 'charger:updated',
+  // ROUTING RULE: Strictly separate OCPP 1.6-J and 2.0.1 parsers by WebSocket profile
+  const parseResult = profileInfo.isVersion201
+    ? parseOcpp201Message({
         stationId,
-        vendor: charger.vendor,
-        model: charger.model,
-        firmwareVersion: charger.firmwareVersion,
-        wsStatus: 'connected',
-      });
-      break;
-    }
-
-    case 'Heartbeat': {
-      responsePayload = {
-        currentTime: new Date().toISOString(),
-      };
-      broadcastToUI({
-        type: 'charger:heartbeat',
+        uniqueId,
+        action,
+        payload,
+        activeTransactions: charger.activeTransactions,
+        subprotocol: profileInfo.profile,
+      })
+    : parseOcpp16Message({
         stationId,
-        timestamp: new Date().toISOString(),
-      });
-      break;
-    }
-
-    case 'StatusNotification': {
-      const connectorId =
-        payload.connectorId !== undefined && Number(payload.connectorId) > 0
-          ? Number(payload.connectorId)
-          : payload.evseId !== undefined && Number(payload.evseId) > 0
-            ? Number(payload.evseId)
-            : 1;
-      const rawStatus = String(payload.connectorStatus || payload.status || 'Available');
-      const statusMap: Record<string, string> = {
-        available: 'Available',
-        occupied: 'Occupied',
-        charging: 'Charging',
-        preparing: 'Preparing',
-        suspendedev: 'SuspendedEV',
-        suspendedevse: 'SuspendedEVSE',
-        finishing: 'Finishing',
-        reserved: 'Reserved',
-        unavailable: 'Unavailable',
-        faulted: 'Faulted',
-      };
-      let status = statusMap[rawStatus.toLowerCase()] || rawStatus;
-      if (status === 'Occupied') {
-        let isActivelyCharging = false;
-        charger.activeTransactions.forEach((tx) => {
-          if (tx.connectorId === connectorId) isActivelyCharging = true;
-        });
-        status = isActivelyCharging ? 'Charging' : 'Preparing';
-      }
-
-      // OCPP 1.6-J Rule: until see the 2nd MeterValues then change the state to "Charging"
-      const isOcpp16 = !charger.ocppVersion || charger.ocppVersion.includes('1.6');
-      if (isOcpp16 && status === 'Charging') {
-        let activeTxForConn: { meterValuesCount?: number } | undefined;
-        charger.activeTransactions.forEach((tx) => {
-          if (tx.connectorId === connectorId) activeTxForConn = tx;
-        });
-        if (activeTxForConn && (activeTxForConn.meterValuesCount || 0) < 2) {
-          console.log(
-            `[OCPP 1.6-J] StatusNotification 'Charging' held as 'Preparing' on ${stationId} connector ${connectorId} until 2nd MeterValues (current count: ${activeTxForConn.meterValuesCount || 0}/2)`
-          );
-          status = 'Preparing';
-        }
-      }
-      const errorCode = String(payload.errorCode || 'NoError');
-
-      responsePayload = {};
-
-      broadcastToUI({
-        type: 'connector:status',
-        stationId,
-        connectorId,
-        status,
-        errorCode,
-        info: payload.info,
-      });
-      break;
-    }
-
-    case 'Authorize': {
-      responsePayload = {
-        idTokenInfo: {
-          status: 'Accepted',
-          type: 'Central',
-        },
-        idTagInfo: {
-          status: 'Accepted',
-          expiryDate: new Date(Date.now() + 86400000).toISOString(),
-          parentIdTag: 'ADMIN-GROUP',
-        },
-      };
-      break;
-    }
-
-    // OCPP 2.0.1 Core Lifecycle Event: TransactionEvent (Started, Updated, Ended)
-    case 'TransactionEvent': {
-      const eventType = String(payload.eventType || 'Updated');
-      const transactionInfo = (payload.transactionInfo as any) || {};
-      const txIdRaw = transactionInfo.transactionId || payload.transactionId;
-      const transactionId = typeof txIdRaw === 'number' ? txIdRaw : parseInt(String(txIdRaw || '').replace(/\D/g, '') || String(Math.floor(100000 + Math.random() * 900000)), 10) || 100001;
-      
-      const evseObj = (payload.evse as any) || {};
-      const connectorId = evseObj.connectorId || evseObj.id || (payload.evseId ? Number(payload.evseId) : (payload.connectorId ? Number(payload.connectorId) : 1));
-      const idTokenObj = (payload.idToken as any) || {};
-      const idTag = String(idTokenObj.idToken || payload.idTag || 'RFID-USER');
-      const now = Date.now();
-
-      // Extract meter values if included in TransactionEvent
-      const meterValues = payload.meterValue || payload.meterValues;
-
-      if (eventType.toLowerCase() === 'started') {
-        let meterStart = 0;
-        if (Array.isArray(meterValues) && meterValues.length > 0) {
-          const sampled = meterValues[0]?.sampledValue || [];
-          const energySample = sampled.find((s: any) => String(s.measurand || '').toLowerCase().includes('energy'));
-          if (energySample) {
-            const val = parseFloat(energySample.value);
-            if (!isNaN(val)) meterStart = val;
-          }
-        }
-
-        charger.activeTransactions.set(transactionId, {
-          connectorId,
-          idTag,
-          startTime: new Date().toISOString(),
-          lastMeterValueTime: now,
-          meterStart,
-        });
-
-        broadcastToUI({
-          type: 'session:started',
-          stationId,
-          connectorId,
-          transactionId,
-          idTag,
-          meterStart,
-          timestamp: new Date().toISOString(),
-        });
-
-        broadcastToUI({
-          type: 'connector:status',
-          stationId,
-          connectorId,
-          status: 'Charging',
-          errorCode: 'NoError',
-        });
-      } else if (eventType.toLowerCase() === 'updated') {
-        if (charger.activeTransactions.has(transactionId)) {
-          const tx = charger.activeTransactions.get(transactionId)!;
-          tx.lastMeterValueTime = now;
-        }
-
-        const chargingState = transactionInfo.chargingState ? String(transactionInfo.chargingState) : undefined;
-        if (chargingState) {
-          const mappedStatus = chargingState === 'Charging' ? 'Charging' : chargingState === 'SuspendedEV' || chargingState === 'SuspendedEVSE' ? 'SuspendedEV' : chargingState === 'Idle' ? 'Available' : 'Preparing';
-          broadcastToUI({
-            type: 'connector:status',
-            stationId,
-            connectorId,
-            status: mappedStatus,
-            errorCode: 'NoError',
-          });
-        }
-      } else if (eventType.toLowerCase() === 'ended') {
-        const activeTx = charger.activeTransactions.get(transactionId);
-        const resolvedConnectorId = activeTx ? activeTx.connectorId : connectorId;
-        charger.activeTransactions.delete(transactionId);
-
-        let meterStop: number | undefined;
-        if (Array.isArray(meterValues) && meterValues.length > 0) {
-          const sampled = meterValues[0]?.sampledValue || [];
-          const energySample = sampled.find((s: any) => String(s.measurand || '').toLowerCase().includes('energy'));
-          if (energySample) {
-            const val = parseFloat(energySample.value);
-            if (!isNaN(val)) meterStop = val;
-          }
-        }
-
-        broadcastToUI({
-          type: 'session:stopped',
-          stationId,
-          transactionId,
-          meterStop,
-          reason: transactionInfo.stoppedReason || payload.reason || 'Local',
-          timestamp: new Date().toISOString(),
-        });
-
-        broadcastToUI({
-          type: 'connector:status',
-          stationId,
-          connectorId: resolvedConnectorId,
-          status: 'Available',
-          errorCode: 'NoError',
-        });
-      }
-
-      // If telemetry included in TransactionEvent, forward to UI
-      if (meterValues) {
-        broadcastToUI({
-          type: 'telemetry:meter_values',
-          stationId,
-          connectorId,
-          transactionId,
-          meterValues,
-        });
-      }
-
-      // OCPP 2.0.1 TransactionEventResponse
-      responsePayload = {
-        totalCost: 0,
-        idTokenInfo: {
-          status: 'Accepted',
-        },
-      };
-      break;
-    }
-
-    case 'StartTransaction': {
-      const connectorId = payload.connectorId !== undefined ? Number(payload.connectorId) : 1;
-      const idTag = String(payload.idTag || 'RFID-TAG');
-      const transactionId = Math.floor(100000 + Math.random() * 900000);
-      const now = Date.now();
-      const meterStart = Number(payload.meterStart || 0);
-
-      const isOcpp16 = !charger.ocppVersion || charger.ocppVersion.includes('1.6');
-
-      charger.activeTransactions.set(transactionId, {
-        connectorId,
-        idTag,
-        startTime: new Date().toISOString(),
-        lastMeterValueTime: now,
-        meterStart,
-        meterValuesCount: 0,
+        uniqueId,
+        action,
+        payload,
+        activeTransactions: charger.activeTransactions,
+        subprotocol: profileInfo.profile,
       });
 
-      responsePayload = {
-        transactionId,
-        idTagInfo: {
-          status: 'Accepted',
-        },
-      };
-
-      broadcastToUI({
-        type: 'session:started',
-        stationId,
-        connectorId,
-        transactionId,
-        idTag,
-        meterStart,
-        meterValuesCount: 0,
-        ocppVersion: charger.ocppVersion || '1.6-J',
-        timestamp: new Date().toISOString(),
-      });
-
-      // OCPP 1.6-J Rule: until see the 2nd MeterValues, keep state as "Preparing"!
-      const initialStatus = isOcpp16 ? 'Preparing' : 'Charging';
-
-      broadcastToUI({
-        type: 'connector:status',
-        stationId,
-        connectorId,
-        status: initialStatus,
-        errorCode: 'NoError',
-        info: isOcpp16 ? 'OCPP 1.6-J session started; state is Preparing until 2nd MeterValues' : undefined,
-      });
-      break;
-    }
-
-    case 'MeterValues': {
-      responsePayload = {};
-
-      const connectorId =
-        payload.connectorId !== undefined && Number(payload.connectorId) > 0
-          ? Number(payload.connectorId)
-          : payload.evseId !== undefined && Number(payload.evseId) > 0
-            ? Number(payload.evseId)
-            : 1;
-      const transactionId = payload.transactionId ? Number(payload.transactionId) : undefined;
-      const meterValues = payload.meterValue || payload.meterValues;
-      const now = Date.now();
-
-      const isOcpp16 = !charger.ocppVersion || charger.ocppVersion.includes('1.6');
-
-      // Reset transaction timeout timer and increment MeterValues count
-      let matchedTx:
-        | {
-            connectorId: number;
-            idTag: string;
-            startTime: string;
-            lastMeterValueTime: number;
-            meterStart?: number;
-            meterValuesCount?: number;
-          }
-        | undefined;
-
-      if (transactionId && charger.activeTransactions.has(transactionId)) {
-        matchedTx = charger.activeTransactions.get(transactionId)!;
-        matchedTx.lastMeterValueTime = now;
-        matchedTx.meterValuesCount = (matchedTx.meterValuesCount || 0) + 1;
-      } else {
-        charger.activeTransactions.forEach((tx) => {
-          if (tx.connectorId === connectorId) {
-            tx.lastMeterValueTime = now;
-            tx.meterValuesCount = (tx.meterValuesCount || 0) + 1;
-            matchedTx = tx;
-          }
-        });
-      }
-
-      const count = matchedTx ? (matchedTx.meterValuesCount || 1) : 1;
-
-      broadcastToUI({
-        type: 'telemetry:meter_values',
-        stationId,
-        connectorId,
-        transactionId,
-        meterValues,
-        meterValuesCount: count,
-        ocppVersion: charger.ocppVersion || '1.6-J',
-      });
-
-      // OCPP 1.6-J Rule: until see the 2nd MeterValues then change the state to "Charging"
-      if (isOcpp16) {
-        if (count === 1) {
-          console.log(
-            `[OCPP 1.6-J] Station ${stationId} connector ${connectorId}: 1st MeterValues received (Tx ${transactionId}). Holding state in 'Preparing'.`
-          );
-          broadcastToUI({
-            type: 'connector:status',
-            stationId,
-            connectorId,
-            status: 'Preparing',
-            errorCode: 'NoError',
-            info: 'OCPP 1.6-J: 1st MeterValues received (1/2); awaiting 2nd MeterValues before transitioning to Charging',
-          });
-        } else if (count >= 2) {
-          console.log(
-            `[OCPP 1.6-J] Station ${stationId} connector ${connectorId}: 2nd MeterValues received (Tx ${transactionId}, count: ${count}). State transitioning to 'Charging'! ⚡`
-          );
-          broadcastToUI({
-            type: 'connector:status',
-            stationId,
-            connectorId,
-            status: 'Charging',
-            errorCode: 'NoError',
-            info: 'OCPP 1.6-J: 2nd MeterValues confirmed! State changed to Charging',
-          });
-        }
-      }
-      break;
-    }
-
-    case 'RequestStartTransaction': {
-      responsePayload = { status: 'Accepted' };
-      break;
-    }
-
-    case 'RequestStopTransaction': {
-      responsePayload = { status: 'Accepted' };
-      break;
-    }
-
-    case 'NotifyEvent': {
-      responsePayload = {};
-      break;
-    }
-
-    case 'NotifyReport': {
-      responsePayload = {};
-      break;
-    }
-
-    case 'StopTransaction': {
-      const transactionId = Number(payload.transactionId || 0);
-      const activeTx = charger.activeTransactions.get(transactionId);
-      const connectorId = activeTx ? activeTx.connectorId : 1;
-      charger.activeTransactions.delete(transactionId);
-
-      responsePayload = {
-        idTagInfo: {
-          status: 'Accepted',
-        },
-      };
-
-      broadcastToUI({
-        type: 'session:stopped',
-        stationId,
-        transactionId,
-        meterStop: payload.meterStop,
-        reason: payload.reason || 'Local',
-        timestamp: new Date().toISOString(),
-      });
-
-      broadcastToUI({
-        type: 'connector:status',
-        stationId,
-        connectorId,
-        status: 'Available',
-        errorCode: 'NoError',
-      });
-      break;
-    }
-
-    case 'DataTransfer': {
-      responsePayload = {
-        status: 'Accepted',
-        data: 'CPMS_OK',
-      };
-      break;
-    }
-
-    default: {
-      // Default accepted response for any unhandled standard actions
-      responsePayload = {};
-      break;
+  // Update charger hardware metadata
+  if (action === 'BootNotification') {
+    const updateEvent = parseResult.uiBroadcasts.find((b) => b.type === 'charger:updated');
+    if (updateEvent) {
+      if (updateEvent.vendor) charger.vendor = updateEvent.vendor;
+      if (updateEvent.model) charger.model = updateEvent.model;
+      if (updateEvent.firmwareVersion) charger.firmwareVersion = updateEvent.firmwareVersion;
     }
   }
 
-  // Send CALLRESULT [3, "<uniqueId>", {responsePayload}]
-  const callResultFrame = JSON.stringify([3, uniqueId, responsePayload]);
+  // Apply state updates to active transactions map
+  if (parseResult.transactionUpdate) {
+    const { action: txAction, transactionId, state } = parseResult.transactionUpdate;
+    if (txAction === 'start' && state) {
+      charger.activeTransactions.set(transactionId, state as any);
+    } else if (txAction === 'update' && state) {
+      const existing = charger.activeTransactions.get(transactionId);
+      if (existing) {
+        Object.assign(existing, state);
+      }
+    } else if (txAction === 'stop') {
+      charger.activeTransactions.delete(transactionId);
+    }
+  }
+
+  // Broadcast typed updates to all connected CPMS UI clients
+  for (const broadcast of parseResult.uiBroadcasts) {
+    broadcastToUI(broadcast);
+  }
+
+  // Send response frame (CallResult or CallError) back to charger
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(callResultFrame);
+      let frameToSend: string;
+      let loggedAction = `${action}Response`;
+      let loggedMessageTypeId = 3;
+      let loggedPayload: any = parseResult.responsePayload;
 
-      // Record server response
+      if (parseResult.responseFrame) {
+        frameToSend = JSON.stringify(parseResult.responseFrame);
+        loggedMessageTypeId = parseResult.responseFrame[0];
+        if (loggedMessageTypeId === 4) {
+          loggedAction = `CallError:${parseResult.responseFrame[2]}`;
+          loggedPayload = {
+            errorCode: parseResult.responseFrame[2],
+            errorDescription: parseResult.responseFrame[3],
+            errorDetails: parseResult.responseFrame[4],
+          };
+        }
+      } else {
+        frameToSend = JSON.stringify([3, uniqueId, parseResult.responsePayload]);
+      }
+
+      ws.send(frameToSend);
+
+      // Record and broadcast server response
       recordAndBroadcastMessage({
         id: uniqueId,
         timestamp: timeStr,
         stationId,
         direction: 'CS_TO_CP',
-        action: `${action}Response`,
-        messageTypeId: 3,
-        payload: responsePayload,
+        action: loggedAction,
+        messageTypeId: loggedMessageTypeId,
+        payload: loggedPayload,
       });
     }
   } catch (err) {
-    console.error(`[OCPP WS] Failed sending CallResult to ${stationId}:`, err);
+    console.error(`[OCPP WS] Failed sending response to ${stationId}:`, err);
   }
 }
 
@@ -944,57 +630,8 @@ export async function sendRemoteCommandToCharger(
   });
 }
 
-// --------------------------------------------------------------------------
-// Active Charging Session Timeout Monitor (1 min timeout without MeterValues)
-// --------------------------------------------------------------------------
-setInterval(() => {
-  const now = Date.now();
-  connectedChargers.forEach((charger) => {
-    charger.activeTransactions.forEach((tx, txId) => {
-      const msSinceLastMeter = now - tx.lastMeterValueTime;
-      // 1 minute timeout (60,000 ms) without any MeterValue message
-      if (msSinceLastMeter >= 60000) {
-        console.log(
-          `[OCPP WS] Transaction ${txId} on station ${charger.stationId} timed out (${Math.round(
-            msSinceLastMeter / 1000
-          )}s without MeterValues). Ending session.`
-        );
+// Note: Inactive timer is not used for state updates. Connected idle chargers remain Available unless an explicit OCPP message is received.
 
-        charger.activeTransactions.delete(txId);
-
-        broadcastToUI({
-          type: 'session:stopped',
-          stationId: charger.stationId,
-          transactionId: txId,
-          reason: 'Timeout',
-          timestamp: new Date().toISOString(),
-        });
-
-        broadcastToUI({
-          type: 'connector:status',
-          stationId: charger.stationId,
-          connectorId: tx.connectorId,
-          status: 'Available',
-          errorCode: 'NoError',
-        });
-
-        recordAndBroadcastMessage({
-          id: `timeout-${txId}-${Date.now().toString().slice(-4)}`,
-          timestamp: new Date().toISOString(),
-          stationId: charger.stationId,
-          direction: 'CS_TO_CP',
-          action: 'TransactionTimeout',
-          messageTypeId: 2,
-          payload: {
-            transactionId: txId,
-            connectorId: tx.connectorId,
-            reason: 'Timeout: No MeterValue received for 1 min',
-          },
-        });
-      }
-    });
-  });
-}, 3000);
 
 // --------------------------------------------------------------------------
 // WebSocket Heartbeat / Keepalive Ping (Every 15s)
@@ -1077,10 +714,14 @@ app.get('/api/ocpp-info', (req, res) => {
   const httpProto = isSecure ? 'https' : 'http';
 
   res.json({
-    wsUrlTemplate: `${wsProto}://${host}/ocpp/ws/:chargerId`,
-    exampleWsUrl: `${wsProto}://${host}/ocpp/ws/CHG-101`,
-    webhookUrlTemplate: `${httpProto}://${host}/api/webhook/ocpp/:chargerId`,
-    exampleWebhookUrl: `${httpProto}://${host}/api/webhook/ocpp/CHG-101`,
+    wsUrlTemplate: `${wsProto}://${host}/ocpp/:version/:chargerId`,
+    wsUrlTemplate16: `${wsProto}://${host}/ocpp/1.6/:chargerId`,
+    wsUrlTemplate201: `${wsProto}://${host}/ocpp/2.0.1/:chargerId`,
+    exampleWsUrl16: `${wsProto}://${host}/ocpp/1.6/CHG-101`,
+    exampleWsUrl201: `${wsProto}://${host}/ocpp/2.0.1/CHG-101`,
+    exampleWsUrl: `${wsProto}://${host}/ocpp/1.6/CHG-101`,
+    webhookUrlTemplate: `${httpProto}://${host}/api/webhook/ocpp/:version/:chargerId`,
+    exampleWebhookUrl: `${httpProto}://${host}/api/webhook/ocpp/1.6/CHG-101`,
     supportedProtocols: ['ocpp1.6', 'ocpp2.0.1'],
     onlineCount: connectedChargers.size,
     isOcppServerActive,
@@ -1090,7 +731,7 @@ app.get('/api/ocpp-info', (req, res) => {
 // --------------------------------------------------------------------------
 // Real Webhook Ingestion Route for Hardware Event Pushes (HTTP/HTTPS)
 // --------------------------------------------------------------------------
-app.post('/api/webhook/ocpp/:stationId', async (req, res) => {
+app.post(['/api/webhook/ocpp/:stationId', '/api/webhook/ocpp/:version/:stationId'], async (req, res) => {
   const { stationId } = req.params;
   const body = req.body || {};
   const signature = req.headers['x-webhook-signature'] || req.headers['authorization'];
@@ -1349,7 +990,14 @@ server.on('upgrade', (request, socket, head) => {
       stationId = parts[3];
     } else if (parts.length === 3) {
       stationId = parts[2];
-    } else if (parts.length === 2 && parts[1] !== 'ws' && parts[1] !== 'ui') {
+    } else if (
+      parts.length === 2 &&
+      parts[1] !== 'ws' &&
+      parts[1] !== 'ui' &&
+      parts[1] !== '1.6' &&
+      parts[1] !== '2.0.1' &&
+      parts[1] !== '2.0'
+    ) {
       stationId = parts[1];
     } else if (parts.length === 1 && parts[0] !== 'ocpp' && parts[0] !== 'ws') {
       stationId = parts[0];

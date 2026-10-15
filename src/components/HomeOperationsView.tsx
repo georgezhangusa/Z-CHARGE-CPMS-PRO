@@ -132,15 +132,17 @@ export const HomeOperationsView: React.FC<HomeOperationsViewProps> = ({
   let preparingCount = 0;
 
   chargers.forEach((c) => {
-    if (c.wsStatus === 'disconnected' || c.wsStatus === 'lag') {
+    const isStationOffline = c.wsStatus === 'disconnected' || !c.wsStatus;
+    if (isStationOffline || c.wsStatus === 'lag') {
       offlineCount++;
     }
     c.evses.forEach((evse) => {
       evse.connectors.forEach((conn) => {
-        if (conn.status === 'Charging') chargingCount++;
-        else if (conn.status === 'Available') availableCount++;
-        else if (conn.status === 'Faulted') faultedCount++;
-        else if (conn.status === 'Preparing' || conn.status === 'Occupied') preparingCount++;
+        const eff = isStationOffline ? 'Offline' : (conn.status || 'Available');
+        if (eff === 'Charging') chargingCount++;
+        else if (eff === 'Available') availableCount++;
+        else if (eff === 'Faulted' || eff === 'Offline') faultedCount++;
+        else if (eff === 'Preparing' || eff === 'Occupied') preparingCount++;
       });
     });
   });
@@ -435,7 +437,7 @@ export const HomeOperationsView: React.FC<HomeOperationsViewProps> = ({
       </div>
 
       {/* Main Row: Live Power Profile & Actionable Triage Alert Center */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pt-1 transition-all duration-200">
         {/* Left 2 Cols: Live Power Profile Chart & Grid Demand */}
         <div className="lg:col-span-2 p-6 rounded-xl bg-white border border-slate-200 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

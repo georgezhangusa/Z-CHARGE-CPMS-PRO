@@ -54,20 +54,20 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
   const initialGeneratedId = `CHG-${Math.floor(100 + Math.random() * 900)}`;
   const [cloudConnectionMode, setCloudConnectionMode] = useState<'webhook_bridge' | 'direct_ocpp' | 'mqtt_iot'>('webhook_bridge');
   const [webhookEntryMode, setWebhookEntryMode] = useState<'wss' | 'https'>('wss');
-  const [webhookUrl, setWebhookUrl] = useState(formatOcppWsUrl(initialGeneratedId));
+  const [webhookUrl, setWebhookUrl] = useState(formatOcppWsUrl(initialGeneratedId, ocppVersion));
   const [webhookSecret, setWebhookSecret] = useState(`whsec_${Math.random().toString(36).substring(2, 15)}_${Date.now().toString(36)}`);
   const [ipAddress, setIpAddress] = useState(`192.168.10.${Math.floor(20 + Math.random() * 80)}`);
   const [generateTestHeartbeat, setGenerateTestHeartbeat] = useState(true);
 
-  // Ensure webhookUrl dynamically follows the real entry URL for current chargerId and protocol mode
+  // Ensure webhookUrl dynamically follows the real entry URL for current chargerId, protocol mode, and ocppVersion
   useEffect(() => {
     const cleanId = chargerId.trim() || 'CHG-NEW';
     if (webhookEntryMode === 'https') {
-      setWebhookUrl(formatHttpWebhookUrl(cleanId));
+      setWebhookUrl(formatHttpWebhookUrl(cleanId, ocppVersion));
     } else {
-      setWebhookUrl(formatOcppWsUrl(cleanId));
+      setWebhookUrl(formatOcppWsUrl(cleanId, ocppVersion));
     }
-  }, [chargerId, webhookEntryMode]);
+  }, [chargerId, webhookEntryMode, ocppVersion]);
 
   useEffect(() => {
     if (sites.length > 0 && (!siteId || siteId === 'site-main')) {
@@ -125,7 +125,7 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
             portNumber: 1,
             type: conn1Type,
             maxPowerKw: totalCapacityKw,
-            status: 'Available',
+            status: 'Offline',
             currentPowerKw: 0,
             voltageV: 800,
             currentA: 0,
@@ -137,7 +137,7 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
             portNumber: 2,
             type: conn2Type,
             maxPowerKw: totalCapacityKw,
-            status: 'Available',
+            status: 'Offline',
             currentPowerKw: 0,
             voltageV: 800,
             currentA: 0,
@@ -167,7 +167,7 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
               portNumber: 1,
               type: 'J1772',
               maxPowerKw: totalCapacityKw,
-              status: 'Available',
+              status: 'Offline',
               currentPowerKw: 0,
               voltageV: 240,
               currentA: 0,
@@ -217,7 +217,7 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
       const nextId = `CHG-${Math.floor(100 + Math.random() * 900)}`;
       setChargerId(nextId);
       setName('');
-      setWebhookUrl(formatOcppWsUrl(nextId));
+      setWebhookUrl(formatOcppWsUrl(nextId, ocppVersion));
       onClose();
     } catch (err: any) {
       console.error('Failed to create charger:', err);
@@ -337,7 +337,12 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
                 onChange={(e) => {
                   const newId = e.target.value;
                   setChargerId(newId);
-                  setWebhookUrl(formatOcppWsUrl(newId.trim() || 'CHG-NEW'));
+                  const cleanId = newId.trim() || 'CHG-NEW';
+                  if (webhookEntryMode === 'https') {
+                    setWebhookUrl(formatHttpWebhookUrl(cleanId, ocppVersion));
+                  } else {
+                    setWebhookUrl(formatOcppWsUrl(cleanId, ocppVersion));
+                  }
                 }}
                 placeholder="e.g. CHG-106, HYC-TX-04"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900 focus:outline-hidden focus:border-cyan-500"
@@ -550,7 +555,7 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
                     type="text"
                     readOnly
                     value={webhookUrl}
-                    className="w-full px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-cyan-300 selection:bg-cyan-900 focus:outline-hidden"
+                    className="w-full px-3 py-2 bg-slate-950 border border-cyan-500/50 rounded-lg text-xs font-mono font-bold text-cyan-300 selection:bg-cyan-900 focus:outline-hidden focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/40 shadow-inner transition-colors tracking-wide"
                   />
                   <button
                     type="button"
@@ -563,7 +568,9 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
                 </div>
                 <p className="text-[10px] text-slate-400 mt-1 font-mono flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span>Real live entry URL: Paste into charger Central System / Webhook settings.</span>
+                  <span>
+                    Real live entry URL for <strong className="text-cyan-300">OCPP {ocppVersion === '2.0.1' ? '2.0.1' : '1.6'}</strong>: Paste into charger Central System settings.
+                  </span>
                 </p>
               </div>
 
@@ -592,12 +599,21 @@ export const AddChargerModal: React.FC<AddChargerModalProps> = ({
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <div>
                   <label className="text-[10px] font-mono text-slate-400 block mb-1">
-                    OCPP Protocol Protocol
+                    OCPP Protocol Version
                   </label>
                   <select
                     value={ocppVersion}
-                    onChange={(e) => setOcppVersion(e.target.value as any)}
-                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white"
+                    onChange={(e) => {
+                      const newVer = e.target.value as '1.6-J' | '2.0.1';
+                      setOcppVersion(newVer);
+                      const cleanId = chargerId.trim() || 'CHG-NEW';
+                      if (webhookEntryMode === 'https') {
+                        setWebhookUrl(formatHttpWebhookUrl(cleanId, newVer));
+                      } else {
+                        setWebhookUrl(formatOcppWsUrl(cleanId, newVer));
+                      }
+                    }}
+                    className="w-full px-2.5 py-2 bg-slate-950 border border-cyan-500/50 rounded-lg text-xs font-mono font-semibold text-cyan-200 focus:outline-hidden focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/40 shadow-xs cursor-pointer transition-colors"
                   >
                     <option value="1.6-J">OCPP 1.6-JSON (Standard)</option>
                     <option value="2.0.1">OCPP 2.0.1 (ISO 15118 PnC)</option>

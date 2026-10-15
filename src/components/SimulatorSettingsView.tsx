@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { ChargingStation, PortStatus } from '../types';
 import { OnlineChargerSocketInfo } from '../lib/useCpmsWebSocket';
+import { formatOcppWsUrl } from '../utils';
 
 interface SimulatorSettingsViewProps {
   chargers: ChargingStation[];
@@ -53,6 +54,7 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
   // Live WebSocket Test Client state
   const [isTestClientConnected, setIsTestClientConnected] = useState(false);
   const [testProtocolVersion, setTestProtocolVersion] = useState<'1.6-J' | '2.0.1'>('1.6-J');
+  const [negotiatedSubprotocol, setNegotiatedSubprotocol] = useState<string>('');
   const [simulatedMeterCount, setSimulatedMeterCount] = useState<number>(0);
   const [testClientLogs, setTestClientLogs] = useState<string[]>([]);
   const testWsRef = useRef<WebSocket | null>(null);
@@ -79,7 +81,7 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
   const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
   const isHttps = typeof window !== 'undefined' ? window.location.protocol === 'https:' : false;
   const wsProto = isHttps ? 'wss' : 'ws';
-  const liveWsEndpoint = `${wsProto}://${host}/ocpp/ws/${selectedStation?.id || 'CHG-101'}`;
+  const liveWsEndpoint = formatOcppWsUrl(selectedStation?.id || 'CHG-101', selectedStation?.ocppVersion);
   const authToken = `Bearer uc_sec_live_9941a8e990c0b2f81`;
 
   const handleCopy = (text: string, key: string) => {
@@ -108,6 +110,7 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
       testWsRef.current.close();
       testWsRef.current = null;
       setIsTestClientConnected(false);
+      setNegotiatedSubprotocol('');
       addTestLog(`🔌 Disconnected test socket for ${selectedStationId}`);
       return;
     }
@@ -118,14 +121,18 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
     }
 
     try {
-      const protocols = testProtocolVersion === '2.0.1' ? ['ocpp2.0.1', 'ocpp1.6'] : ['ocpp1.6'];
-      addTestLog(`Connecting to real WebSocket server using ${testProtocolVersion}: ${liveWsEndpoint}...`);
+      const protocols = testProtocolVersion === '2.0.1' ? ['ocpp2.0.1', 'ocpp2.0'] : ['ocpp1.6', 'ocpp1.6j'];
+      const targetProfile = testProtocolVersion === '2.0.1' ? 'ocpp2.0.1' : 'ocpp1.6';
+      addTestLog(`Connecting using WebSocket profile [${targetProfile}] (${testProtocolVersion}): ${liveWsEndpoint}...`);
       const ws = new WebSocket(liveWsEndpoint, protocols);
       testWsRef.current = ws;
 
       ws.onopen = () => {
         setIsTestClientConnected(true);
-        addTestLog(`✅ Connected to CPMS WebSocket server over ${ws.protocol || testProtocolVersion}!`);
+        const activeProfile = ws.protocol || targetProfile;
+        setNegotiatedSubprotocol(activeProfile);
+        const activeParser = testProtocolVersion === '2.0.1' ? 'OCPP 2.0.1 Parser' : 'OCPP 1.6-J Parser';
+        addTestLog(`✅ Connected over profile [${activeProfile}]! Server routing frames to: ${activeParser}`);
 
         // Automatically send BootNotification frame [2, "<id>", "BootNotification", {...}]
         const bootId = `boot-${Date.now()}`;
@@ -206,7 +213,7 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
           'StatusNotification',
           {
             timestamp: new Date().toISOString(),
-            connectorStatus: st === 'Charging' ? 'Occupied' : st,
+            connectorStatus: st,
             evseId: selectedPort,
             connectorId: selectedPort,
           },
@@ -380,13 +387,11 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
     addTestLog(`📤 Sent ${frame[2] || action}: [2, "${msgId}", "${frame[2] || action}", ...]`);
 
     if (action === 'StartTransaction' && testProtocolVersion === '1.6-J') {
-      addTestLog(`ℹ️ [OCPP 1.6-J] Transaction started: State set to 'Preparing'. Awaiting 2nd MeterValues for 'Charging'.`);
+      addTestLog(`ℹ️ [OCPP 1.6-J] Transaction started: State set to 'Preparing'. Awaiting 1st MeterValues for 'Charging'.`);
     } else if (action === 'MeterValues' && testProtocolVersion === '1.6-J') {
       const currentCount = simulatedMeterCount + 1;
       if (currentCount === 1) {
-        addTestLog(`ℹ️ [OCPP 1.6-J] MeterValues #1 received: State stays 'Preparing' (1/2 received).`);
-      } else if (currentCount === 2) {
-        addTestLog(`⚡ [OCPP 1.6-J] MeterValues #2 received: 2nd MeterValues confirmed! State transitioned to 'Charging' ⚡`);
+        addTestLog(`⚡ [OCPP 1.6-J] MeterValues #1 received: 1st MeterValues confirmed! State transitioned to 'Charging' ⚡`);
       } else {
         addTestLog(`⚡ [OCPP 1.6-J] MeterValues #${currentCount} received: Actively Charging (${currentCount} total).`);
       }
@@ -596,6 +601,7 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Protocol Selector */}
             <div className="flex items-center rounded-lg border border-slate-300 bg-slate-100 p-0.5 text-xs font-mono">
               <button
                 type="button"
@@ -623,6 +629,34 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
               </button>
             </div>
 
+            {/* Port Selector (Port 1 / Port 2) */}
+            <div className="flex items-center rounded-lg border border-cyan-300 bg-cyan-50/80 p-0.5 text-xs font-mono">
+              <button
+                type="button"
+                onClick={() => setSelectedPort(1)}
+                className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${
+                  selectedPort === 1
+                    ? 'bg-cyan-700 text-white shadow-2xs'
+                    : 'text-cyan-800 hover:text-cyan-950'
+                }`}
+                title="Target Port 1 for OCPP frames"
+              >
+                Port 1
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedPort(2)}
+                className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${
+                  selectedPort === 2
+                    ? 'bg-cyan-700 text-white shadow-2xs'
+                    : 'text-cyan-800 hover:text-cyan-950'
+                }`}
+                title="Target Port 2 for OCPP frames"
+              >
+                Port 2
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={handleToggleTestWebSocket}
@@ -639,6 +673,26 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
                   : `Connect ${testProtocolVersion} Client`}
               </span>
             </button>
+          </div>
+        </div>
+
+        {/* Profile and Parser Status Indicator Banner */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-500 font-medium">Negotiated WS Profile:</span>
+            <span className="font-mono px-2 py-0.5 rounded bg-cyan-100 text-cyan-900 font-bold text-[11px] border border-cyan-200">
+              {negotiatedSubprotocol || (testProtocolVersion === '2.0.1' ? 'ocpp2.0.1' : 'ocpp1.6')}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-500 font-medium">Active Message Parser:</span>
+            <span className={`font-mono px-2 py-0.5 rounded font-bold text-[11px] border ${
+              testProtocolVersion === '2.0.1'
+                ? 'bg-purple-100 text-purple-900 border-purple-200'
+                : 'bg-emerald-100 text-emerald-900 border-emerald-200'
+            }`}>
+              {testProtocolVersion === '2.0.1' ? 'OCPP 2.0.1 Parser (TransactionEvent / EVSE Model)' : 'OCPP 1.6-J Parser (Standard Edition 2)'}
+            </span>
           </div>
         </div>
 
@@ -727,20 +781,18 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
                       <span className="font-semibold text-cyan-300">OCPP 1.6-J Rule:</span>
                       <span>
                         {simulatedMeterCount === 0
-                          ? 'Awaiting 2nd MeterValues to change state to "Charging"'
-                          : simulatedMeterCount === 1
-                          ? '1st MeterValues received (State stays Preparing; awaiting 2nd)'
-                          : `2nd MeterValues confirmed! State changed to Charging ⚡ (${simulatedMeterCount} total)`}
+                          ? 'Awaiting 1st MeterValues to change state to "Charging"'
+                          : `1st MeterValues confirmed! State changed to Charging ⚡ (${simulatedMeterCount} total)`}
                       </span>
                     </div>
                     <span
                       className={`text-[11px] px-2.5 py-0.5 rounded-full font-mono font-semibold border ${
-                        simulatedMeterCount >= 2
+                        simulatedMeterCount >= 1
                           ? 'bg-emerald-900/60 border-emerald-500/60 text-emerald-300'
                           : 'bg-amber-900/60 border-amber-500/60 text-amber-300'
                       }`}
                     >
-                      {simulatedMeterCount >= 2 ? '⚡ State: Charging' : '⏳ State: Preparing'} ({Math.min(simulatedMeterCount, 2)}/2)
+                      {simulatedMeterCount >= 1 ? '⚡ State: Charging' : '⏳ State: Preparing'} ({Math.min(simulatedMeterCount, 1)}/1)
                     </span>
                   </div>
 
@@ -759,28 +811,37 @@ export const SimulatorSettingsView: React.FC<SimulatorSettingsViewProps> = ({
                       type="button"
                       onClick={() => handleSendTestFrame('StatusNotification', 'Charging')}
                       className="btn-3d btn-3d-cyan px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white flex items-center gap-1"
-                      title="Send StatusNotification (held as Preparing until 2nd MeterValues)"
+                      title={`Send StatusNotification (Charging) for Port ${selectedPort}`}
                     >
                       <Zap className="w-3.5 h-3.5 text-yellow-300" />
-                      <span>Status: Charging (Clamped if &lt;2 MeterValues)</span>
+                      <span>Status: Charging (Port {selectedPort})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSendTestFrame('StatusNotification', 'Preparing')}
+                      className="btn-3d btn-3d-white px-2.5 py-1.5 rounded-lg text-xs font-semibold text-amber-700 flex items-center gap-1"
+                      title={`Send StatusNotification (Preparing) for Port ${selectedPort}`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                      <span>Status: Preparing (Port {selectedPort})</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => handleSendTestFrame('StatusNotification', 'Available')}
                       className="btn-3d btn-3d-white px-2.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 flex items-center gap-1"
-                      title="Notify CPMS that port is Available"
+                      title={`Notify CPMS that Port ${selectedPort} is Available`}
                     >
                       <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                      <span>Status: Available</span>
+                      <span>Status: Available (Port {selectedPort})</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => handleSendTestFrame('StatusNotification', 'Faulted')}
                       className="btn-3d btn-3d-white px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-700 flex items-center gap-1"
-                      title="Notify CPMS that port is Faulted"
+                      title={`Notify CPMS that Port ${selectedPort} is Faulted`}
                     >
                       <span className="w-2 h-2 rounded-full bg-rose-500" />
-                      <span>Status: Faulted</span>
+                      <span>Status: Faulted (Port {selectedPort})</span>
                     </button>
                   </div>
 

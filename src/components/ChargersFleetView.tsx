@@ -83,12 +83,14 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
 
     // Status filter
     if (statusFilter !== 'All') {
+      const isOfflineStation = c.wsStatus === 'disconnected' || !c.wsStatus;
       const hasStatus = c.evses.some((evse) =>
         evse.connectors.some((conn) => {
+          const effStatus = isOfflineStation ? 'Offline' : (conn.status || 'Available');
           if (statusFilter === 'Occupied' || statusFilter === 'Preparing') {
-            return conn.status === 'Occupied' || conn.status === 'Preparing';
+            return effStatus === 'Occupied' || effStatus === 'Preparing';
           }
-          return conn.status === statusFilter;
+          return effStatus === statusFilter;
         })
       );
       if (!hasStatus) return false;
@@ -129,16 +131,20 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
           }
           break;
         case 'port1': {
-          const sA = a.evses[0]?.connectors[0]?.status || '';
-          const sB = b.evses[0]?.connectors[0]?.status || '';
+          const isAOff = a.wsStatus === 'disconnected' || !a.wsStatus;
+          const isBOff = b.wsStatus === 'disconnected' || !b.wsStatus;
+          const sA = isAOff ? 'Offline' : (a.evses[0]?.connectors[0]?.status || 'Available');
+          const sB = isBOff ? 'Offline' : (b.evses[0]?.connectors[0]?.status || 'Available');
           comparison = sA.localeCompare(sB);
           break;
         }
         case 'port2': {
+          const isAOff = a.wsStatus === 'disconnected' || !a.wsStatus;
+          const isBOff = b.wsStatus === 'disconnected' || !b.wsStatus;
           const connA = a.evses.length > 1 ? a.evses[1]?.connectors[0] : a.evses[0]?.connectors[1];
           const connB = b.evses.length > 1 ? b.evses[1]?.connectors[0] : b.evses[0]?.connectors[1];
-          const sA = connA?.status || '';
-          const sB = connB?.status || '';
+          const sA = isAOff ? 'Offline' : (connA?.status || 'Available');
+          const sB = isBOff ? 'Offline' : (connB?.status || 'Available');
           comparison = sA.localeCompare(sB);
           break;
         }
@@ -521,14 +527,15 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {sortedChargers.map((station) => {
-                  const p1 = station.evses[0]?.connectors[0];
+                  const allConnectors = station.evses.flatMap((e) => e.connectors);
+                  const p1 = allConnectors.find((c) => c.portNumber === 1) || station.evses[0]?.connectors[0];
                   const p2 =
-                    station.evses.length > 1
+                    allConnectors.find((c) => c.portNumber === 2) ||
+                    (station.evses.length > 1
                       ? station.evses[1]?.connectors[0]
-                      : station.evses[0]?.connectors[1];
+                      : station.evses[0]?.connectors[1]);
 
-                  const p1Style = p1 ? getStatusColor(p1.status) : null;
-                  const p2Style = p2 ? getStatusColor(p2.status) : null;
+                  const isStationOffline = station.wsStatus === 'disconnected' || !station.wsStatus;
 
                   // Active charging sessions for this station and ports
                   const activeStationSession = sessions?.find(
@@ -548,6 +555,13 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
                   const p1Session = p1 ? getPortActiveSession(p1.portNumber, p1.activeSessionId) : null;
                   const p2Session = p2 ? getPortActiveSession(p2.portNumber, p2.activeSessionId) : null;
 
+                  // Port 1/2 initial states should be "Offline", until the network is online
+                  const p1Status: PortStatus = isStationOffline ? 'Offline' : (p1?.status || 'Available');
+                  const p2Status: PortStatus = isStationOffline ? 'Offline' : (p2?.status || 'Available');
+
+                  const p1Style = p1 ? getStatusColor(p1Status) : null;
+                  const p2Style = p2 ? getStatusColor(p2Status) : null;
+
                   return (
                     <tr
                       key={station.id}
@@ -561,8 +575,16 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
                             {station.id}
                           </span>
                         </div>
-                        <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                          {station.ocppVersion}
+                        <div className="mt-1">
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                              station.ocppVersion === '2.0.1'
+                                ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                : 'bg-slate-100 text-slate-700 border-slate-200'
+                            }`}
+                          >
+                            OCPP {station.ocppVersion}
+                          </span>
                         </div>
 
 
@@ -619,22 +641,22 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
                               >
                                 <span
                                   className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                    p1.status === 'Charging'
+                                    p1Status === 'Charging'
                                       ? 'bg-cyan-500 shadow-xs shadow-cyan-400 animate-ping'
-                                      : p1.status === 'Preparing' || p1.status === 'Occupied'
+                                      : p1Status === 'Preparing' || p1Status === 'Occupied'
                                         ? 'bg-amber-500 animate-pulse'
-                                        : p1.status === 'SuspendedEV' || p1.status === 'SuspendedSystem'
+                                        : p1Status === 'SuspendedEV' || p1Status === 'SuspendedSystem'
                                           ? 'bg-indigo-500 animate-pulse'
-                                          : p1.status === 'Finishing'
+                                          : p1Status === 'Finishing'
                                             ? 'bg-violet-500'
-                                            : p1.status === 'Faulted'
+                                            : p1Status === 'Faulted'
                                               ? 'bg-rose-500 animate-pulse'
-                                              : p1.status === 'Available'
-                                                ? 'bg-emerald-500'
-                                                : 'bg-slate-400'
+                                              : p1Status === 'Offline'
+                                                ? 'bg-slate-400'
+                                                : 'bg-emerald-500'
                                   }`}
                                 />
-                                <span>{formatPortStatus(p1.status)}</span>
+                                <span>{formatPortStatus(p1Status)}</span>
                               </span>
                             </div>
                             {p1Session && (
@@ -670,22 +692,22 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
                               >
                                 <span
                                   className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                    p2.status === 'Charging'
+                                    p2Status === 'Charging'
                                       ? 'bg-cyan-500 shadow-xs shadow-cyan-400 animate-ping'
-                                      : p2.status === 'Preparing' || p2.status === 'Occupied'
+                                      : p2Status === 'Preparing' || p2Status === 'Occupied'
                                         ? 'bg-amber-500 animate-pulse'
-                                        : p2.status === 'SuspendedEV' || p2.status === 'SuspendedSystem'
+                                        : p2Status === 'SuspendedEV' || p2Status === 'SuspendedSystem'
                                           ? 'bg-indigo-500 animate-pulse'
-                                          : p2.status === 'Finishing'
+                                          : p2Status === 'Finishing'
                                             ? 'bg-violet-500'
-                                            : p2.status === 'Faulted'
+                                            : p2Status === 'Faulted'
                                               ? 'bg-rose-500 animate-pulse'
-                                              : p2.status === 'Available'
-                                                ? 'bg-emerald-500'
-                                                : 'bg-slate-400'
+                                              : p2Status === 'Offline'
+                                                ? 'bg-slate-400'
+                                                : 'bg-emerald-500'
                                   }`}
                                 />
-                                <span>{formatPortStatus(p2.status)}</span>
+                                <span>{formatPortStatus(p2Status)}</span>
                               </span>
                             </div>
                             {p2Session && (
@@ -882,10 +904,13 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
                 <div className="space-y-1.5 pt-1">
                   {station.evses.map((evse) =>
                     evse.connectors.map((conn) => {
-                      const st = getStatusColor(conn.status);
                       const connSession = sessions?.find(
                         (s) => s.stationId === station.id && s.portNumber === conn.portNumber && s.status === 'active'
                       ) || (conn.activeSessionId ? { id: conn.activeSessionId } : null);
+
+                      const isStationOffline = station.wsStatus === 'disconnected' || !station.wsStatus;
+                      const effStatus: PortStatus = isStationOffline ? 'Offline' : (conn.status || 'Available');
+                      const st = getStatusColor(effStatus);
 
                       return (
                         <div
@@ -912,22 +937,22 @@ export const ChargersFleetView: React.FC<ChargersFleetViewProps> = ({
                           >
                             <span
                               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                conn.status === 'Charging'
+                                effStatus === 'Charging'
                                   ? 'bg-cyan-500 shadow-xs shadow-cyan-400 animate-ping'
-                                  : conn.status === 'Preparing' || conn.status === 'Occupied'
+                                  : effStatus === 'Preparing' || effStatus === 'Occupied'
                                     ? 'bg-amber-500 animate-pulse'
-                                    : conn.status === 'SuspendedEV' || conn.status === 'SuspendedSystem'
+                                    : effStatus === 'SuspendedEV' || effStatus === 'SuspendedSystem'
                                       ? 'bg-indigo-500 animate-pulse'
-                                      : conn.status === 'Finishing'
+                                      : effStatus === 'Finishing'
                                         ? 'bg-violet-500'
-                                        : conn.status === 'Faulted'
+                                        : effStatus === 'Faulted'
                                           ? 'bg-rose-500 animate-pulse'
-                                          : conn.status === 'Available'
-                                            ? 'bg-emerald-500'
-                                            : 'bg-slate-400'
+                                          : effStatus === 'Offline'
+                                            ? 'bg-slate-400'
+                                            : 'bg-emerald-500'
                               }`}
                             />
-                            <span>{formatPortStatus(conn.status)}</span>
+                            <span>{formatPortStatus(effStatus)}</span>
                           </span>
                         </div>
                       );

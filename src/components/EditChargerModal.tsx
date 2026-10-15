@@ -57,10 +57,11 @@ export const EditChargerModal: React.FC<EditChargerModalProps> = ({
       setVendor(station.vendor || '');
       setModel(station.model || '');
       setTotalCapacityKw(station.totalCapacityKw || (station.type === 'DCFC' ? 180 : 19.2));
-      setOcppVersion(station.ocppVersion || '1.6-J');
+      const ver = station.ocppVersion || '1.6-J';
+      setOcppVersion(ver);
       setIsSimultaneous(station.isSimultaneous ?? true);
       setCloudConnectionMode(station.cloudConnectionMode || 'webhook_bridge');
-      setWebhookUrl(formatOcppWsUrl(station.id, station.webhookUrl));
+      setWebhookUrl(formatOcppWsUrl(station.id, station.webhookUrl, ver));
       setIpAddress(station.ipAddress || '192.168.1.100');
 
       const c1 = station.evses[0]?.connectors[0];
@@ -238,7 +239,13 @@ export const EditChargerModal: React.FC<EditChargerModalProps> = ({
                 <label className="block text-slate-600 font-medium mb-1">OCPP Protocol Version</label>
                 <select
                   value={ocppVersion}
-                  onChange={(e) => setOcppVersion(e.target.value as '1.6-J' | '2.0.1')}
+                  onChange={(e) => {
+                    const newVer = e.target.value as '1.6-J' | '2.0.1';
+                    setOcppVersion(newVer);
+                    if (station) {
+                      setWebhookUrl(formatOcppWsUrl(station.id, webhookUrl, newVer));
+                    }
+                  }}
                   className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900"
                 >
                   <option value="1.6-J">OCPP 1.6-J (JSON / WS)</option>
@@ -359,7 +366,7 @@ export const EditChargerModal: React.FC<EditChargerModalProps> = ({
                 <label className="block text-slate-600 font-medium">Webhook Target URL</label>
                 <button
                   type="button"
-                  onClick={() => setWebhookUrl(formatOcppWsUrl(station.id))}
+                  onClick={() => setWebhookUrl(formatOcppWsUrl(station.id, ocppVersion))}
                   className="text-[10px] text-cyan-600 hover:text-cyan-800 font-mono font-medium hover:underline cursor-pointer"
                 >
                   Reset Real Entry URL
@@ -369,11 +376,11 @@ export const EditChargerModal: React.FC<EditChargerModalProps> = ({
                 type="text"
                 value={webhookUrl}
                 onChange={(e) => setWebhookUrl(e.target.value)}
-                placeholder={formatOcppWsUrl(station.id)}
+                placeholder={formatOcppWsUrl(station.id, ocppVersion)}
                 className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-hidden focus:border-cyan-500"
               />
               <p className="text-[10px] text-slate-500 mt-1 font-mono">
-                Real Entry URL: {formatOcppWsUrl(station.id)}
+                Real Entry URL: {formatOcppWsUrl(station.id, ocppVersion)}
               </p>
             </div>
           </div>

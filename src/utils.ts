@@ -1,4 +1,4 @@
-import { PortStatus, StopReason } from './types';
+import { ChargingStation, Connector, PortStatus, StopReason } from './types';
 
 export function getStatusColor(status: PortStatus): {
   bg: string;
@@ -189,49 +189,105 @@ export function getRealProtocol(): { isHttps: boolean; wsProto: 'wss' | 'ws'; ht
 }
 
 /**
- * Format WebSocket URL for an EV charger / ChargeBox
- * Format: wss://<real-host>/ocpp/ws/<ChargeBoxID>
+ * Format WebSocket URL for an EV charger / ChargeBox according to OCPP version
+ * Format:
+ *   - OCPP 1.6: wss://<real-host>/ocpp/1.6/<ChargeBoxID>
+ *   - OCPP 2.0.1: wss://<real-host>/ocpp/2.0.1/<ChargeBoxID>
  * Uses the live active environment host (e.g. Cloud Run preview URL or local host).
  */
-export function formatOcppWsUrl(chargeBoxId: string, existingUrl?: string): string {
+export function formatOcppWsUrl(
+  chargeBoxId: string,
+  param2?: string,
+  param3?: string
+): string {
   const host = getRealHost();
   const { wsProto } = getRealProtocol();
   const cleanId = (chargeBoxId || 'CHG-NEW').trim();
 
-  // If existingUrl is already a real URL pointing to a valid custom server (excluding legacy fake placeholders)
+  let existingUrl: string | undefined;
+  let ocppVer: string | undefined;
+
+  // Determine whether param2 is an existingUrl or an ocppVersion string
+  if (param2) {
+    if (
+      param2.startsWith('ws://') ||
+      param2.startsWith('wss://') ||
+      param2.startsWith('http://') ||
+      param2.startsWith('https://')
+    ) {
+      existingUrl = param2;
+      ocppVer = param3;
+    } else {
+      ocppVer = param2;
+    }
+  }
+
+  const verSlug = ocppVer?.includes('2.0') ? '2.0.1' : '1.6';
+
+  // If existingUrl is already a real custom URL pointing to a valid custom server (excluding legacy fake placeholders)
   if (
     existingUrl &&
     (existingUrl.startsWith('wss://') || existingUrl.startsWith('ws://')) &&
-    existingUrl.includes('/ocpp/ws/') &&
+    (existingUrl.includes('/ocpp/1.6/') ||
+      existingUrl.includes('/ocpp/2.0.1/') ||
+      existingUrl.includes('/ocpp/ws/')) &&
     !existingUrl.includes('z-charge-cpms2.ai.studio') &&
     !existingUrl.includes('cpms.zcharge.network')
   ) {
+    if (ocppVer) {
+      return existingUrl.replace(/\/ocpp\/(1\.6|2\.0\.1|ws)\//, `/ocpp/${verSlug}/`);
+    }
     return existingUrl;
   }
 
-  return `${wsProto}://${host}/ocpp/ws/${cleanId}`;
+  return `${wsProto}://${host}/ocpp/${verSlug}/${cleanId}`;
 }
 
 /**
- * Format HTTPS Webhook Ingest URL for an EV charger / HTTP Bridge
- * Format: https://<real-host>/api/webhook/ocpp/<ChargeBoxID>
+ * Format HTTPS Webhook Ingest URL for an EV charger / HTTP Bridge according to OCPP version
+ * Format:
+ *   - OCPP 1.6: https://<real-host>/api/webhook/ocpp/1.6/<ChargeBoxID>
+ *   - OCPP 2.0.1: https://<real-host>/api/webhook/ocpp/2.0.1/<ChargeBoxID>
  */
-export function formatHttpWebhookUrl(chargeBoxId: string, existingUrl?: string): string {
+export function formatHttpWebhookUrl(
+  chargeBoxId: string,
+  param2?: string,
+  param3?: string
+): string {
   const host = getRealHost();
   const { httpProto } = getRealProtocol();
   const cleanId = (chargeBoxId || 'CHG-NEW').trim();
 
+  let existingUrl: string | undefined;
+  let ocppVer: string | undefined;
+
+  if (param2) {
+    if (param2.startsWith('http://') || param2.startsWith('https://')) {
+      existingUrl = param2;
+      ocppVer = param3;
+    } else {
+      ocppVer = param2;
+    }
+  }
+
+  const verSlug = ocppVer?.includes('2.0') ? '2.0.1' : '1.6';
+
   if (
     existingUrl &&
     (existingUrl.startsWith('https://') || existingUrl.startsWith('http://')) &&
-    existingUrl.includes('/api/webhook/ocpp/') &&
+    (existingUrl.includes('/api/webhook/ocpp/1.6/') ||
+      existingUrl.includes('/api/webhook/ocpp/2.0.1/') ||
+      existingUrl.includes('/api/webhook/ocpp/')) &&
     !existingUrl.includes('z-charge-cpms2.ai.studio') &&
     !existingUrl.includes('cpms.zcharge.network')
   ) {
+    if (ocppVer) {
+      return existingUrl.replace(/\/api\/webhook\/ocpp\/(1\.6|2\.0\.1|ws)\//, `/api/webhook/ocpp/${verSlug}/`);
+    }
     return existingUrl;
   }
 
-  return `${httpProto}://${host}/api/webhook/ocpp/${cleanId}`;
+  return `${httpProto}://${host}/api/webhook/ocpp/${verSlug}/${cleanId}`;
 }
 
 /**
@@ -243,9 +299,10 @@ export function formatHttpWebhookUrl(chargeBoxId: string, existingUrl?: string):
 export function formatPortStatus(status?: PortStatus | string): string {
   if (!status) return 'Available';
   const s = String(status).trim().toLowerCase();
-  if (s === 'preparing' || s.includes('prepar') || s === 'occupied' || s.includes('evconnect')) return 'Occupied';
+  if (s === 'preparing' || s.includes('prepar')) return 'Preparing';
+  if (s === 'occupied' || s.includes('evconnect')) return 'Occupied';
+  if (s === 'finishing' || s.includes('finish')) return 'Finishing';
   if (s.includes('charg')) return 'Charging';
-  if (s.includes('finish')) return 'Finishing';
   if (s.includes('avail') || s === 'idle') return 'Available';
   if (s.includes('fault')) return 'Faulted';
   if (s.includes('unavail') || s.includes('offlin')) return 'Offline';
@@ -255,4 +312,91 @@ export function formatPortStatus(status?: PortStatus | string): string {
   if (s.includes('reserv')) return 'Reserved';
   return status as string;
 }
+
+/**
+ * Robustly resolve the port index (1 or 2) for an individual connector in a station
+ */
+export function getPortNumberForConnector(
+  station: ChargingStation,
+  eIdx: number,
+  cIdx: number,
+  conn: Connector
+): number {
+  // Case A: Station has multiple EVSEs (common in OCPP 2.0.1 and DC fast chargers)
+  if (station.evses && station.evses.length > 1) {
+    return eIdx + 1;
+  }
+  // Case B: Connector has an explicit portNumber
+  if (conn.portNumber !== undefined && conn.portNumber > 0) {
+    return conn.portNumber;
+  }
+  // Case C: Single EVSE with multiple connectors
+  return cIdx + 1;
+}
+
+/**
+ * Determine if a specific connector matches a target port (1 or 2)
+ */
+export function isTargetConnector(
+  targetPort: number,
+  station: ChargingStation,
+  eIdx: number,
+  cIdx: number,
+  conn: Connector
+): boolean {
+  if (targetPort === 0) {
+    // Port 0 in OCPP represents the main ChargePoint controller / chassis ground, not individual ports
+    return false;
+  }
+  const resolvedPort = getPortNumberForConnector(station, eIdx, cIdx, conn);
+  return resolvedPort === targetPort;
+}
+
+/**
+ * Robustly extract port number (1 or 2) from any OCPP 1.6 or 2.0.1 payload
+ */
+export function extractOcppPortNumber(payload: Record<string, any>): number {
+  if (!payload || typeof payload !== 'object') return 1;
+
+  const evseObj = (payload.evse as any) || {};
+
+  const rawConnId = payload.connectorId !== undefined && !isNaN(Number(payload.connectorId)) ? Number(payload.connectorId) : undefined;
+  const rawEvseConnId = typeof evseObj.connectorId === 'number' && !isNaN(evseObj.connectorId) ? Number(evseObj.connectorId) : undefined;
+  const rawEvseId = payload.evseId !== undefined && !isNaN(Number(payload.evseId)) ? Number(payload.evseId) : undefined;
+  const rawEvseObjId = typeof evseObj.id === 'number' && !isNaN(evseObj.id) ? Number(evseObj.id) : undefined;
+  const rawPort = payload.port !== undefined && !isNaN(Number(payload.port)) ? Number(payload.port) : undefined;
+  const rawPortNumber = payload.portNumber !== undefined && !isNaN(Number(payload.portNumber)) ? Number(payload.portNumber) : undefined;
+
+  // Explicit check for Port 2
+  if (
+    rawPort === 2 ||
+    rawPortNumber === 2 ||
+    rawConnId === 2 ||
+    rawEvseConnId === 2 ||
+    rawEvseId === 2 ||
+    rawEvseObjId === 2
+  ) {
+    return 2;
+  }
+
+  // Explicit check for Port 1
+  if (
+    rawPort === 1 ||
+    rawPortNumber === 1 ||
+    rawConnId === 1 ||
+    rawEvseConnId === 1 ||
+    rawEvseId === 1 ||
+    rawEvseObjId === 1
+  ) {
+    return 1;
+  }
+
+  // Explicit check for Port 0 (main station / controller)
+  if (rawConnId === 0 || rawEvseId === 0) {
+    return 0;
+  }
+
+  return 1;
+}
+
 
